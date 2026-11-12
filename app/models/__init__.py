@@ -8,7 +8,9 @@ from decimal import Decimal
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Computed,
     DateTime,
+    FetchedValue,
     ForeignKey,
     Integer,
     Numeric,
@@ -296,3 +298,79 @@ class SyncState(Base):
     value: Mapped[dict] = mapped_column(JSONB)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+# ---------------------------------------------------------------- orders (0004)
+class SupplyOrder(Base):
+    __tablename__ = "supply_orders"
+
+    order_id: Mapped[uuid.UUID] = _uuid_pk()
+    order_no: Mapped[str] = mapped_column(String(20), server_default=FetchedValue())
+    supplier_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("suppliers.supplier_id"))
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id"))
+    status: Mapped[str] = mapped_column(String(10), default="draft")
+    note: Mapped[str | None] = mapped_column(Text)
+    delivery_charge: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    supplier_note: Mapped[str | None] = mapped_column(Text)
+    cancel_reason: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    submitted_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    created_at: Mapped[datetime] = _created()
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    supplier_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    answered_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+
+    lines: Mapped[list["SupplyOrderLine"]] = relationship(
+        lazy="selectin", order_by="SupplyOrderLine.heading", cascade="all, delete-orphan")
+
+
+class SupplyOrderLine(Base):
+    __tablename__ = "supply_order_lines"
+
+    line_id: Mapped[uuid.UUID] = _uuid_pk()
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("supply_orders.order_id"))
+    supplier_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    offer_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    online_product_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    online_variant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    heading: Mapped[str] = mapped_column(String(200))
+    label: Mapped[str] = mapped_column(String(120), default="")
+    boxes: Mapped[int] = mapped_column(Integer)
+    units_per_box: Mapped[int] = mapped_column(Integer)
+    units: Mapped[int] = mapped_column(Integer, Computed("boxes * units_per_box"))
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    mrp: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    line_total: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), Computed("boxes * units_per_box * unit_price"))
+
+
+class BasePrice(Base):
+    __tablename__ = "base_prices"
+
+    base_price_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    online_product_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    online_variant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    supplier_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    order_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    line_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    mrp: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    recorded_at: Mapped[datetime] = _created()
+    voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class OutboxEvent(Base):
+    __tablename__ = "supply_outbox"
+
+    seq: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    event: Mapped[str] = mapped_column(String(40))
+    payload: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = _created()

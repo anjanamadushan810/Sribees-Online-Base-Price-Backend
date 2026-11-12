@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     # Bearer token for Online's /internal/supply/* routes (Online keeps only its SHA-256).
     online_service_token: str = ""
 
+    # Who approves a submitted supplier order: "local" = the owner in Supply (until Finance
+    # is live, QUESTIONS.md #9); "finance" = Finance's PO approval answers through the outbox.
+    order_approval: str = Field(default="local", pattern="^(local|finance)$")
+
     # ---- supplier app (phone + SMS one-time code) ----
     # A supplier signs in rarely on their own phone; SMS costs money, so the session is long.
     supplier_refresh_days: int = 90

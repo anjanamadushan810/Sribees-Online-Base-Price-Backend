@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
-from app.api import admin, auth, catalog, matching, supplier_auth
+from app.api import admin, auth, catalog, matching, orders, supplier_auth
 from app.core.config import get_settings
 from app.core.db import get_engine
 from app.services.errors import SupplyError
@@ -70,6 +70,7 @@ def create_app() -> FastAPI:
     app.include_router(supplier_auth.router)
     app.include_router(catalog.router)
     app.include_router(matching.router)
+    app.include_router(orders.router)
     return app
 
 

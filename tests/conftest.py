@@ -73,22 +73,34 @@ class Person:
         self.headers = {"Authorization": f"Bearer {access_token}"}
 
 
-async def make_user(role: str):
+async def make_user(role: str, branch_ids=()):
     from app.core.db import get_sessionmaker
     from app.core.security import hash_password
-    from app.models import User
+    from app.models import Branch, User
 
     email = f"{role}.{secrets.token_hex(3)}@example.com"
     password = secrets.token_urlsafe(16)
     async with get_sessionmaker()() as s, s.begin():
+        branches = [await s.get(Branch, b) for b in branch_ids]
         s.add(User(email=email, full_name=f"Test {role}", role=role,
-                   password_hash=hash_password(password)))
+                   password_hash=hash_password(password), branches=branches))
     return email, password
 
 
-async def sign_in(client, role: str) -> Person:
+async def make_branch(name: str = "Branch") -> str:
+    from app.core.db import get_sessionmaker
+    from app.models import Branch
+
+    async with get_sessionmaker()() as s, s.begin():
+        b = Branch(code=f"B{secrets.token_hex(3).upper()}", name=name)
+        s.add(b)
+        await s.flush()
+        return str(b.branch_id)
+
+
+async def sign_in(client, role: str, branch_ids=()) -> Person:
     """Create a staff user and walk the real sign-in flow, enrolling 2FA."""
-    email, password = await make_user(role)
+    email, password = await make_user(role, branch_ids)
     r = await client.post("/auth/login", json={"email": email, "password": password})
     assert r.status_code == 200, r.text
     body = r.json()

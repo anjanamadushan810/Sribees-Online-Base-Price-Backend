@@ -7,7 +7,7 @@ import pytest
 
 from app.matching import scorer
 from app.matching.text import parse_size, romanize, sound_key
-from tests.test_catalog import RESOLUTIONS, FIXTURE, bearer
+from tests.test_catalog import FIXTURE, RESOLUTIONS, bearer
 from tests.test_supplier_auth import signed_in_supplier
 
 

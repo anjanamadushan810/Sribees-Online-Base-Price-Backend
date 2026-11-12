@@ -1,7 +1,7 @@
 [project]
-name = "sribees-base-price"
+name = "sribees-supply"
 version = "0.1.0"
-description = "Sribees Base Price: supplier price lists, matching, orders, base price and receiving"
+description = "Sribees Supply: suppliers, price lists, orders, base price, receiving and stock"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi==0.115.12",

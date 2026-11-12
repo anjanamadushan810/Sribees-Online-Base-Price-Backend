@@ -5,6 +5,7 @@ access is the supplier id inside their own token type (see api/deps.py)."""
 READ_ALL = {
     "branches.read",
     "suppliers.read",
+    "matches.read",
 }
 
 ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
@@ -13,13 +14,15 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
         | {
             "branches.write",
             "suppliers.write",
+            "matches.write",
+            "online.sync",
             "users.read",
             "users.write",
             "audit.read",
         }
     ),
     # Compares offers, confirms matches, places orders, receives stock.
-    "purchasing": frozenset(READ_ALL | {"suppliers.write"}),
+    "purchasing": frozenset(READ_ALL | {"suppliers.write", "matches.write", "online.sync"}),
     # Raises requests for their own branch; sees suppliers.
     "branch_manager": frozenset(READ_ALL),
     # Read-only: price history, orders.

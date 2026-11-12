@@ -241,3 +241,58 @@ class SupplierOfferPrice(Base):
     supplier_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     changed_at: Mapped[datetime] = _created()
+
+
+# ---------------------------------------------------------------- matching (0003)
+class OnlineProduct(Base):
+    __tablename__ = "online_products"
+
+    online_product_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    sku: Mapped[str | None] = mapped_column(String(100))
+    name: Mapped[str] = mapped_column(String(255))
+    name_si: Mapped[str | None] = mapped_column(String(255))
+    display_size: Mapped[str | None] = mapped_column(String(80))
+    display_size_unit: Mapped[str | None] = mapped_column(String(32))
+    size_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 3))
+    size_kind: Mapped[str | None] = mapped_column(String(8))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    synced_at: Mapped[datetime] = _created()
+
+
+class OnlineVariant(Base):
+    __tablename__ = "online_variants"
+
+    online_variant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    online_product_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("online_products.online_product_id"))
+    sku: Mapped[str | None] = mapped_column(String(100))
+    name: Mapped[str] = mapped_column(String(120), default="")
+    weight_grams: Mapped[int | None] = mapped_column(Integer)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class OfferMatch(Base):
+    __tablename__ = "offer_matches"
+
+    match_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    offer_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    supplier_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    online_product_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("online_products.online_product_id"))
+    online_variant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("online_variants.online_variant_id"))
+    status: Mapped[str] = mapped_column(String(10))
+    score: Mapped[Decimal | None] = mapped_column(Numeric(4, 3))
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _created()
+
+
+class SyncState(Base):
+    __tablename__ = "sync_state"
+
+    key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSONB)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

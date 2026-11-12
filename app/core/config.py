@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     two_factor: bool = True
     allow_production_without_2fa: bool = False
 
+    # ---- SRIBEESonline link (catalogue mirror). Internal address, never the public one.
+    online_api_url: str = ""
+    # Bearer token for Online's /internal/supply/* routes (Online keeps only its SHA-256).
+    online_service_token: str = ""
+
     # ---- supplier app (phone + SMS one-time code) ----
     # A supplier signs in rarely on their own phone; SMS costs money, so the session is long.
     supplier_refresh_days: int = 90

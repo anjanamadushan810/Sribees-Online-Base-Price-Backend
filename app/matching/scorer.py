@@ -15,9 +15,18 @@ from dataclasses import dataclass
 from decimal import Decimal
 from difflib import SequenceMatcher
 
-from app.matching.text import brand_word, has_sinhala, parse_size, romanize, sound_key, words
+from app.matching.text import (
+    brand_word,
+    kinds_in_english,
+    parse_size,
+    sound_key,
+    spelling,
+    type_words,
+    words,
+)
 
-BRAND_MIN = 0.75
+BRAND_MIN = 0.85  # for brand keys longer than SHORT_KEY
+SHORT_KEY = 4  # keys this short must be identical (PLPT != PLPS)
 SUGGEST_MIN = 0.6
 TOP = 3
 
@@ -43,18 +52,34 @@ def _same_size(a: tuple[Decimal, str], b: tuple[Decimal, str]) -> bool:
     return big == 0 or abs(a[0] - b[0]) / big <= Decimal("0.01")
 
 
+def _brand_close(a: str, b: str) -> float:
+    """1.0 for the same brand sound, else a similarity that counts only for long keys.
+    Short keys differ by one letter between unrelated brands (Velvet PLPT, Philips PLPS)."""
+    ka, kb = sound_key(a), sound_key(b)
+    if not ka or not kb:
+        return 0.0
+    if ka == kb:
+        if len(ka) > 3:
+            return 1.0
+        # 2-3 letter keys collide between brands (Pears/Wijaya "PS", Yahaposha/Pepsi):
+        # the spelling must also be close.
+        return 1.0 if _ratio(spelling(a), spelling(b)) >= 0.65 else 0.0
+    if min(len(ka), len(kb)) <= SHORT_KEY:
+        # Sri Lankan spelling drops sounds the English keeps (පෙයාස් "peyas" = Pears):
+        # a short brand with a different key still counts when spelt almost alike.
+        return 1.0 if _ratio(spelling(a), spelling(b)) >= 0.75 else 0.0
+    return _ratio(ka, kb)
+
+
 def _brand_sim(supplier_heading: str, c: Candidate) -> float:
     sb = brand_word(supplier_heading)
-    best = 0.0
-    if c.name_si and has_sinhala(sb):
-        best = _ratio(romanize(sb), romanize(brand_word(c.name_si)))
-    best = max(best, _ratio(sound_key(sb), sound_key(brand_word(c.name))))
-    # two-word brands ("Coca Cola", "Sun Light") written as one word on the other side
-    ws, wc = words(supplier_heading), words(c.name)
+    best = _brand_close(sb, brand_word(c.name))
+    if c.name_si:
+        best = max(best, _brand_close(sb, brand_word(c.name_si)))
+    # A two-word brand on Online written as one word by the supplier ("Coca Cola").
+    wc = words(c.name)
     if len(wc) >= 2:
-        best = max(best, _ratio(sound_key(sb), sound_key(wc[0] + wc[1])))
-    if len(ws) >= 2:
-        best = max(best, _ratio(sound_key(ws[0] + ws[1]), sound_key(brand_word(c.name))))
+        best = max(best, _brand_close(sb, wc[0] + wc[1]))
     return best
 
 
@@ -73,8 +98,12 @@ def _name_sim(text: str, c: Candidate) -> float:
 def score(heading: str, label: str, c: Candidate) -> float | None:
     """0..1, or None when the candidate must never be suggested."""
     mine_size = parse_size(label) or parse_size(heading)
-    if mine_size and c.size and not _same_size(mine_size, c.size):
-        return None
+    if mine_size and (not c.size or not _same_size(mine_size, c.size)):
+        return None  # a stated size must be the product's size
+    ours = type_words(heading)
+    theirs = kinds_in_english(c.name)
+    if ours and theirs and not (ours & theirs):
+        return None  # clearly another kind of product (toothbrush for a toothpaste line)
     brand = _brand_sim(heading, c)
     if brand < BRAND_MIN:
         return None
@@ -85,6 +114,7 @@ def score(heading: str, label: str, c: Candidate) -> float | None:
 
 def best(heading: str, label: str, candidates: list[Candidate],
          exclude: set = frozenset()) -> list[tuple[Candidate, float]]:
+    mine_size = parse_size(label) or parse_size(heading)
     ranked = []
     for c in candidates:
         if c.online_product_id in exclude:
@@ -92,5 +122,9 @@ def best(heading: str, label: str, candidates: list[Candidate],
         s = score(heading, label, c)
         if s is not None and s >= SUGGEST_MIN:
             ranked.append((c, s))
+    # When the line states a size and some candidate has exactly that size, products
+    # whose size is unknown are not offered beside it (Clogard 70g != a toothbrush).
+    if mine_size and any(c.size and _same_size(mine_size, c.size) for c, _ in ranked):
+        ranked = [(c, s) for c, s in ranked if c.size and _same_size(mine_size, c.size)]
     ranked.sort(key=lambda x: -x[1])
     return ranked[:TOP]

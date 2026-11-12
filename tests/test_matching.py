@@ -186,3 +186,25 @@ async def test_confirm_unknown_product_404(client, purchasing, matched_setup):
                           headers=purchasing.headers,
                           json={"online_product_id": str(uuid.uuid4())})
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------- real-catalogue cases
+# Found by running Nishi's list against SRIBEESonline's 889 products (2026-11-13).
+@pytest.mark.parametrize(("heading", "label", "good", "bad"), [
+    ("පෙයාස් බේබි සබන්", "70g", "Pears Pure & Gentle Baby Soap 70g", "Wijaya Pappadam 70g"),
+    ("වෙල්වට් සබන්", "70g", "Velvet Milk And Almond 70g", "Philips 14w Bulbs"),
+    ("යහපෝෂ", "", None, "Pepsi 1.5l"),
+    ("ක්ලෝගාර්ඩ්", "70g", None, "Clogard Chooty Junior Toothbrush"),
+    ("ඇට්ලස්/මැන්ගෝ පෑන්", "", None, "Atlas Colour Pencils (12pcs pack)"),
+    ("කොකාකෝලා,ස්ප්‍රයිට්", "250ml", "Coca Cola Orginal Taste 250ml", "Pepsi 250ml"),
+    ("මන්චි ක්‍රීම් ක්‍රැකර්", "", "Munchee Super Cream Cracker 125g", None),
+    ("සිග්නල් ටූත් බ්‍රෂ්", "", "Signal Triple Clean Adult Toothbrush",
+     "Signal Triple Protection 123 Toothpaste 120g"),
+])
+def test_real_catalogue_cases(heading, label, good, bad):
+    cands = [cand(n) for n in (good, bad) if n]
+    picked = [c.name for c, _ in scorer.best(heading, label, cands)]
+    if good:
+        assert good in picked
+    if bad:
+        assert bad not in picked

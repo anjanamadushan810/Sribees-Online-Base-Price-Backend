@@ -150,3 +150,49 @@ def brand_word(text: str) -> str:
             return w
     ws = words(text)
     return ws[0] if ws else ""
+
+
+# What a thing IS, in the supplier's Sinhala -> the English word Online uses. Used to
+# require the same kind of product (a toothpaste line must not meet a toothbrush).
+TYPE_WORDS = {
+    "සබන්": "soap", "ෂැම්පු": "shampoo", "ශැම්පු": "shampoo", "ශැම්පූ": "shampoo",
+    "තේ": "tea", "කිරි": "milk", "පිටි": "powder", "නූඩ්ල්ස්": "noodles",
+    "බිස්කට්": "biscuit", "ටොෆි": "toffee", "හදුන්කූරු": "incense", "මාස්ක්": "mask",
+    "පවුඩර්": "powder", "මැකරල්": "mackerel", "සෝස්": "sauce", "චීස්": "cheese",
+    "පැස්ටා": "pasta", "ලයිටර්": "lighter", "ප්ලාස්ටර්": "plaster", "බාම්": "balm",
+    "පෑන්": "pen", "ටේප්": "tape", "ග්ලු": "glue", "රේසර්": "razor", "නැප්කින්": "napkin",
+    "පැම්පස්": "diaper", "බ්‍රෂ්": "toothbrush", "ක්‍රැකර්": "cracker", "මාරි": "marie",
+    "මිල්ක්": "milk", "පීනට්": "peanut", "සෝයාමීට්": "soya", "සෝයා": "soya",
+    "ඩ්‍රින්ක්": "drink", "බීම": "drink", "දියර": "liquid", "කහට": "tea",
+    "ටූත්": "toothpaste", "ගිනි": "matches", "කැරලි": "clip", "කොලෝන්": "cologne",
+}
+
+# Kinds that tell products apart. A candidate showing one of these that is not ours is
+# another kind of product. (milk / powder / liquid describe too many things to count.)
+CONFLICT_KINDS = {
+    "soap", "shampoo", "tea", "noodles", "biscuit", "toffee", "incense", "mask", "sauce",
+    "cheese", "pasta", "lighter", "plaster", "balm", "pen", "tape", "glue", "razor",
+    "napkin", "diaper", "toothbrush", "toothpaste", "cracker", "matches", "clip", "cologne",
+    "drink", "jelly", "cordial", "perfume", "coffee", "pencil", "book", "notebook",
+}
+
+
+def kinds_in_english(text: str) -> set[str]:
+    """Whole words only ("pen" is not in "pencils"); a trailing s is allowed."""
+    found = set(re.findall(r"[a-z]+", (text or "").lower()))
+    return {k for k in CONFLICT_KINDS if k in found or k + "s" in found or
+            (k.endswith("s") and k[:-1] in found)}
+
+
+def spelling(text: str) -> str:
+    """Rough spelling for comparing short brands across scripts (kokaakoolaa ~ cocacola)."""
+    s = romanize(text) if has_sinhala(text) else (text or "").lower()
+    s = re.sub(r"[^a-z]", "", s).replace("c", "k").replace("w", "v").replace("ph", "f")
+    return re.sub(r"([aeiou])\1+", r"\1", s)
+
+
+def type_words(text: str) -> set[str]:
+    kinds = {TYPE_WORDS[w] for w in words(text) if w in TYPE_WORDS}
+    if "toothbrush" in kinds:
+        kinds.discard("toothpaste")  # "ටූත් බ්‍රෂ්" is a brush
+    return kinds

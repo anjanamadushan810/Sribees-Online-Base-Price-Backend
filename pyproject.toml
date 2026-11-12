@@ -12,8 +12,11 @@ dependencies = [
     "psycopg[binary]==3.2.6",
     "pydantic==2.11.3",
     "pydantic-settings==2.9.1",
+    "email-validator==2.2.0",
     "argon2-cffi==23.1.0",
+    "pyotp==2.9.0",
     "pyjwt==2.10.1",
+    "cryptography==44.0.2",
     "tzdata==2025.2",
     "httpx==0.28.1",
 ]

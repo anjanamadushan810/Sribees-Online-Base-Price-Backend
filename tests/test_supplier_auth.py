@@ -328,3 +328,14 @@ def test_production_refuses_fake_sms_and_fixed_code():
         Settings(**base, sms_provider="fake")
     with pytest.raises(ValueError, match="DEV_FIXED_OTP"):
         Settings(**base, sms_provider="textlk", dev_fixed_otp="123456")
+
+
+
+async def test_sms_not_set_up_fails_the_same_for_everyone(client, owner):
+    _, su = await new_supplier(client, owner)
+    with settings_override(sms_provider="textlk", textlk_api_token="", textlk_sender_id=""):
+        known = await client.post("/supplier/auth/request-code", json={"phone": su["phone"]},
+                                  headers=ip_headers())
+        stranger = await client.post("/supplier/auth/request-code",
+                                     json={"phone": unique_mobile()}, headers=ip_headers())
+    assert known.status_code == stranger.status_code == 503

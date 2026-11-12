@@ -121,10 +121,18 @@ def _check_money(price: Decimal, mrp: Decimal | None, units: int | None) -> None
         raise SupplyError("price must be more than 0")
     if mrp is not None and mrp <= 0:
         raise SupplyError("selling price must be more than 0")
-    if mrp is not None and price > mrp:
-        raise SupplyError("our price is above the selling price")
     if units is not None and not 0 < units <= MAX_UNITS_PER_BOX:
         raise SupplyError(f"units per box must be between 1 and {MAX_UNITS_PER_BOX:,}")
+
+
+HELD_PRICE_ABOVE_MRP = "price_above_mrp"
+
+
+def held_reason(price: Decimal, mrp: Decimal | None) -> str | None:
+    """Our price above the selling price is almost always a typing slip: the line is
+    kept but held - not shared, not orderable - and staff see a label (owner,
+    2026-11-12) until the supplier fixes it."""
+    return HELD_PRICE_ABOVE_MRP if mrp is not None and price > mrp else None
 
 
 def _no_nulls(changes: dict, nullable: tuple[str, ...] = ()) -> dict:
@@ -155,7 +163,7 @@ async def load(db: AsyncSession, supplier_id: uuid.UUID, *, active_only: bool = 
             by_section[p.section_id].append(p)
     by_product: dict[uuid.UUID, list[SupplierOffer]] = defaultdict(list)
     for o in offers:
-        if not active_only or o.is_active:
+        if not active_only or (o.is_active and o.held_reason is None):
             by_product[o.product_id].append(o)
     if active_only:
         sections = [s for s in sections if s.is_active]
@@ -250,7 +258,7 @@ async def preview(db: AsyncSession, supplier_id: uuid.UUID, pasted: str) -> dict
         raise SupplyError("no price list found: lines like '🛑🛑 Section 🛑🛑' and "
                           "'(125/165)(150)' are needed")
     by_title, products, by_product = await _existing_index(db, supplier_id)
-    flagged, changed, reshaped = [], [], []
+    flagged, changed, reshaped, held = [], [], [], []
     new_products = new_offers = same = 0
     seen: dict[tuple, int] = defaultdict(int)
     for s in pl.sections:
@@ -275,6 +283,9 @@ async def preview(db: AsyncSession, supplier_id: uuid.UUID, pasted: str) -> dict
             else:
                 new_products += 1
             for key, o in zip(_offer_keys(p.offers), p.offers, strict=True):
+                if o.held and not o.needs_review:
+                    held.append({"line_no": o.line_no, "raw": o.raw, "heading": p.heading,
+                                 "label": o.label, "price": o.price, "mrp": o.mrp})
                 if o.needs_review:
                     flagged.append({"line_no": o.line_no, "raw": o.raw, "heading": p.heading,
                                     "section": s.title, "flags": o.flags, "price": o.price,
@@ -303,6 +314,7 @@ async def preview(db: AsyncSession, supplier_id: uuid.UUID, pasted: str) -> dict
         "same_offers": same,
         "flagged": flagged,
         "reshaped": reshaped,
+        "held": held,
         "has_header": bool(pl.header),
         "has_footer": bool(pl.footer),
     }
@@ -374,7 +386,8 @@ async def import_text(
                     new = SupplierOffer(
                         supplier_id=supplier_id, product_id=row.product_id, label=o.label,
                         price=o.price, mrp=o.mrp, units_per_box=o.units_per_box,
-                        extra=list(o.extra), sort_order=o_idx * 10)
+                        extra=list(o.extra), sort_order=o_idx * 10,
+                        held_reason=held_reason(o.price, o.mrp))
                     db.add(new)
                     await db.flush()
                     db.add(_history(new, actor, "import"))
@@ -391,6 +404,7 @@ async def import_text(
                                        "old_price": str(old.price), "new_price": str(o.price)})
                 old.price, old.mrp, old.units_per_box = o.price, o.mrp, o.units_per_box
                 old.extra = list(o.extra)
+                old.held_reason = held_reason(o.price, o.mrp)
                 db.add(_history(old, actor, "import"))
                 result.offers_changed += 1
 
@@ -504,7 +518,7 @@ async def add_offer(db, supplier_id, product_id, *, label: str, price: Decimal,
                            .where(SupplierOffer.product_id == product_id))
     offer = SupplierOffer(supplier_id=supplier_id, product_id=product_id, label=label.strip(),
                           price=price, mrp=mrp, units_per_box=units_per_box,
-                          sort_order=(last or 0) + 10)
+                          sort_order=(last or 0) + 10, held_reason=held_reason(price, mrp))
     db.add(offer)
     await db.flush()
     db.add(_history(offer, actor, actor.source))
@@ -527,6 +541,7 @@ async def update_offer(db, supplier_id, offer_id, *, changes: dict,
     before = {"price": str(offer.price), "mrp": str(offer.mrp), "units": offer.units_per_box}
     for k, v in changes.items():
         setattr(offer, k, v.strip() if k == "label" else v)
+    offer.held_reason = held_reason(price, mrp)
     await db.flush()
     if money_changed:
         db.add(_history(offer, actor, actor.source))
@@ -543,3 +558,18 @@ async def offer_history(db, supplier_id, offer_id) -> list[SupplierOfferPrice]:
         select(SupplierOfferPrice).where(SupplierOfferPrice.offer_id == offer_id)
         .order_by(SupplierOfferPrice.changed_at.desc(), SupplierOfferPrice.history_id.desc())
     )).all())
+
+
+async def held_offers(db: AsyncSession, supplier_id: uuid.UUID | None = None) -> list[dict]:
+    """Price lines held back, for the staff label list."""
+    q = (select(SupplierOffer, SupplierProduct.heading, Supplier.name)
+         .join(SupplierProduct, SupplierProduct.product_id == SupplierOffer.product_id)
+         .join(Supplier, Supplier.supplier_id == SupplierOffer.supplier_id)
+         .where(SupplierOffer.held_reason.is_not(None))
+         .order_by(Supplier.name, SupplierProduct.heading))
+    if supplier_id:
+        q = q.where(SupplierOffer.supplier_id == supplier_id)
+    return [{"offer_id": o.offer_id, "supplier_id": o.supplier_id, "supplier_name": name,
+             "heading": heading, "label": o.label, "price": o.price, "mrp": o.mrp,
+             "held_reason": o.held_reason, "updated_at": o.updated_at}
+            for o, heading, name in (await db.execute(q)).all()]

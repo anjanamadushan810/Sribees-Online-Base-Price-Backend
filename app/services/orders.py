@@ -70,10 +70,13 @@ async def _stale_lines(db: AsyncSession, order: SupplyOrder) -> list[str]:
         product = await db.get(SupplierProduct, offer.product_id) if offer else None
         match = await db.scalar(select(OfferMatch).where(
             OfferMatch.offer_id == ln.offer_id, OfferMatch.status == "confirmed"))
+        match_moved = ln.online_product_id is not None and (
+            match is None or match.online_product_id != ln.online_product_id
+            or match.online_variant_id != ln.online_variant_id)
         if (offer is None or product is None or not offer.is_active or not product.is_active
+                or offer.held_reason is not None
                 or offer.price != ln.unit_price or offer.units_per_box != ln.units_per_box
-                or match is None or match.online_product_id != ln.online_product_id
-                or match.online_variant_id != ln.online_variant_id):
+                or match_moved):
             stale.append(f"{ln.heading} {ln.label}".strip())
     return stale
 
@@ -171,17 +174,21 @@ async def add_line(db: AsyncSession, actor: StaffActor, order_id: uuid.UUID, *,
         raise Conflict("the supplier no longer offers this")
     if offer.units_per_box is None:
         raise Conflict("units per box is not known for this offer; ask the supplier first")
+    if offer.held_reason is not None:
+        raise Conflict("this price line is held (our price is above the selling price); "
+                       "the supplier must fix it first")
+    # An unmatched offer may be ordered (owner, 2026-11-12); it is matched at receiving,
+    # and its base price is written then.
     match = await db.scalar(select(OfferMatch).where(OfferMatch.offer_id == offer_id,
                                                      OfferMatch.status == "confirmed"))
-    if match is None:
-        raise Conflict("match this offer to an Online product before ordering it")
     if any(ln.offer_id == offer_id for ln in order.lines):
         raise Conflict("this offer is already on the order; change its boxes instead")
     if boxes * offer.units_per_box * offer.price > MAX_LINE_TOTAL:
         raise SupplyError("this line is too large")
     db.add(SupplyOrderLine(
         order_id=order.order_id, supplier_id=order.supplier_id, offer_id=offer_id,
-        online_product_id=match.online_product_id, online_variant_id=match.online_variant_id,
+        online_product_id=match.online_product_id if match else None,
+        online_variant_id=match.online_variant_id if match else None,
         heading=product.heading, label=offer.label, boxes=boxes,
         units_per_box=offer.units_per_box, unit_price=offer.price, mrp=offer.mrp))
     await db.flush()
@@ -221,7 +228,8 @@ async def submit(db: AsyncSession, actor: StaffActor, order_id: uuid.UUID) -> Su
     order.status, order.submitted_by, order.submitted_at = "submitted", actor.user_id, _now()
     totals = order_totals(order)
     _emit(db, "order.submitted", order, goods_total=str(totals["goods_total"]),
-          lines=[{"online_product_id": str(ln.online_product_id),
+          lines=[{"online_product_id": str(ln.online_product_id)
+                  if ln.online_product_id else None,
                   "online_variant_id": str(ln.online_variant_id)
                   if ln.online_variant_id else None,
                   "units": ln.boxes * ln.units_per_box, "unit_price": str(ln.unit_price)}
@@ -259,7 +267,8 @@ async def approve(db: AsyncSession, actor: StaffActor, order_id: uuid.UUID) -> S
 
 
 async def cancel(db: AsyncSession, actor: StaffActor, order_id: uuid.UUID, *,
-                 reason: str) -> SupplyOrder:
+                 reason: str, note: str | None = None) -> SupplyOrder:
+    """`reason` is shown to the supplier; `note` is for staff only (owner, 2026-11-12)."""
     order = await get(db, order_id, actor, lock=True)
     if order.status not in ("draft", "submitted", "approved", "accepted"):
         raise Conflict(f"a {order.status} order cannot be cancelled")
@@ -270,6 +279,7 @@ async def cancel(db: AsyncSession, actor: StaffActor, order_id: uuid.UUID, *,
         raise Forbidden("you do not have access to this")
     was_visible = order.status in SUPPLIER_VISIBLE
     order.status, order.cancel_reason = "cancelled", reason.strip()
+    order.cancel_note = (note or "").strip() or None
     order.cancelled_at, order.cancelled_by = _now(), actor.user_id
     voided = await db.execute(update(BasePrice).where(
         BasePrice.order_id == order.order_id, BasePrice.voided_at.is_(None))
@@ -334,6 +344,9 @@ async def answer(db: AsyncSession, supplier_id: uuid.UUID, supplier_user_id: uui
         for ln in order.lines:
             # The supplier agreed to the line as approved; but if staff re-matched the offer
             # since, the line's product is no longer trusted for a base price (review #1).
+            if ln.online_product_id is None:  # unmatched: base price at receiving
+                skipped.append(str(ln.line_id))
+                continue
             match = await db.scalar(select(OfferMatch).where(
                 OfferMatch.offer_id == ln.offer_id, OfferMatch.status == "confirmed"))
             if (match is None or match.online_product_id != ln.online_product_id

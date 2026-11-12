@@ -4,6 +4,11 @@ only keeps messages in memory; production refuses SMS_PROVIDER=fake (core/config
 from dataclasses import dataclass, field
 
 from app.core.config import get_settings
+from app.services.errors import SupplyError
+
+
+class SmsUnavailable(SupplyError):
+    status_code = 503
 
 
 @dataclass
@@ -24,13 +29,49 @@ class FakeSms:
 _fake = FakeSms()
 
 
+class SmsSendError(Exception):
+    pass
+
+
+@dataclass
+class TextLkSms:
+    """Text.lk API v3, same account and sender ID as SRIBEESonline (owner, 2026-11-12).
+    The token travels in the Authorization header, never in a URL."""
+
+    api_token: str
+    sender_id: str
+    base_url: str = "https://app.text.lk/api/v3"
+
+    async def send(self, phone: str, text: str) -> None:
+        import httpx
+
+        payload = {"recipient": phone.lstrip("+"), "sender_id": self.sender_id,
+                   "type": "plain" if text.isascii() else "unicode", "message": text}
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.post(f"{self.base_url.rstrip('/')}/sms/send", json=payload,
+                                      headers={"Authorization": f"Bearer {self.api_token}",
+                                               "Accept": "application/json"})
+        except httpx.HTTPError as exc:
+            raise SmsSendError(f"Text.lk unreachable: {type(exc).__name__}") from exc
+        try:
+            body = r.json()
+        except ValueError:
+            body = None
+        # Text.lk answers some failures with HTTP 200 and status "error".
+        if r.status_code != 200 or not isinstance(body, dict) or body.get("status") not in (
+                True, "success"):
+            raise SmsSendError(f"Text.lk refused (HTTP {r.status_code})")
+
+
 def get_sender():
-    provider = get_settings().sms_provider
-    if provider == "fake":
+    s = get_settings()
+    if s.sms_provider == "fake":
         return _fake
-    # Text.lk is wired when the supplier app goes to production (PLAN.md phase 7),
-    # through the same account SRIBEESonline uses. Until then a real send is impossible.
-    raise RuntimeError(f"SMS provider {provider!r} is not set up yet")
+    if not s.textlk_api_token or not s.textlk_sender_id:
+        raise SmsUnavailable("SMS is not set up")
+    return TextLkSms(api_token=s.textlk_api_token, sender_id=s.textlk_sender_id,
+                     base_url=s.textlk_base_url)
 
 
 def fake_outbox() -> FakeSms:

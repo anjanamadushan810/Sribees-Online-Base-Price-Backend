@@ -182,6 +182,7 @@ class OfferOut(ORM):
     units_per_box: int | None
     extra: list[str]
     is_active: bool
+    held_reason: str | None = None
 
 
 class CatalogProductOut(ORM):
@@ -263,6 +264,7 @@ class ImportPreviewOut(BaseModel):
     same_offers: int
     flagged: list[FlaggedLineOut]
     reshaped: list[dict] = []
+    held: list[dict] = []
     has_header: bool
     has_footer: bool
 
@@ -332,3 +334,15 @@ class OfferPriceOut(ORM):
     units_per_box: int | None
     source: str
     changed_at: datetime
+
+
+class HeldOfferOut(BaseModel):
+    offer_id: uuid.UUID
+    supplier_id: uuid.UUID
+    supplier_name: str
+    heading: str
+    label: str
+    price: Money
+    mrp: Money | None
+    held_reason: str
+    updated_at: datetime

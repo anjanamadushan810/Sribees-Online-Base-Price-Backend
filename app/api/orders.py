@@ -41,7 +41,7 @@ class LineOut(ORM):
 
 
 class StaffLineOut(LineOut):
-    online_product_id: uuid.UUID
+    online_product_id: uuid.UUID | None
     online_variant_id: uuid.UUID | None
 
 
@@ -60,6 +60,7 @@ class OrderBase(BaseModel):
 
 
 class StaffOrderOut(OrderBase):
+    cancel_note: str | None
     supplier_id: uuid.UUID
     supplier_name: str
     branch_id: uuid.UUID
@@ -90,7 +91,8 @@ class BoxesIn(BaseModel):
 
 
 class CancelIn(BaseModel):
-    reason: str = Field(min_length=3, max_length=500)
+    reason: str = Field(min_length=3, max_length=500)  # the supplier sees this
+    note: str | None = Field(default=None, max_length=2000)  # staff only
 
 
 class AnswerIn(BaseModel):
@@ -150,7 +152,7 @@ async def _staff_out(db, order: SupplyOrder) -> StaffOrderOut:
     return StaffOrderOut(
         **{k: getattr(order, k) for k in (
             "order_id", "order_no", "status", "supplier_note", "approved_at", "answered_at",
-            "cancel_reason", "supplier_id", "branch_id", "note", "created_at",
+            "cancel_reason", "cancel_note", "supplier_id", "branch_id", "note", "created_at",
             "submitted_at", "supplier_seen_at")},
         **orders.order_totals(order), supplier_name=supplier_name, branch_name=branch_name,
         lines=[StaffLineOut.model_validate(ln) for ln in order.lines])
@@ -220,7 +222,8 @@ async def approve(order_id: uuid.UUID, p: Principal = Depends(current_principal)
 @router.post("/orders/{order_id}/cancel", response_model=StaffOrderOut)
 async def cancel(order_id: uuid.UUID, body: CancelIn, p: Principal = Depends(current_principal),
                  db: AsyncSession = Depends(get_db)):
-    return await _staff_out(db, await orders.cancel(db, _actor(p), order_id, reason=body.reason))
+    return await _staff_out(db, await orders.cancel(db, _actor(p), order_id, reason=body.reason,
+                                                    note=body.note))
 
 
 # ---------------------------------------------------------------- base prices

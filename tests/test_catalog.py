@@ -309,7 +309,7 @@ async def test_price_history_is_append_only(client, nishi):
 # ---------------------------------------------------------------- review 2026-11-12
 @pytest.mark.parametrize(("url_part", "body"), [
     ("offers", {"label": None}), ("offers", {"is_active": None}),
-    ("offers", {"price": "200", "mrp": "150"}), ("offers", {"units_per_box": 1_000_001}),
+    ("offers", {"units_per_box": 1_000_001}),
     ("products", {"heading": None}), ("products", {"is_active": None}),
 ])
 async def test_bad_patches_are_422_not_500(client, nishi, url_part, body):
@@ -339,3 +339,42 @@ async def test_preview_warns_when_a_heading_gains_or_loses_lines(client, nishi):
     p = (await client.post("/supplier/catalog/import/preview", headers=h,
                            json={"text": safe})).json()
     assert p["reshaped"] == []
+
+
+# ---------------------------------------------------------------- owner 2026-11-12: held lines
+async def test_price_above_mrp_is_held_not_shared_and_labelled(client, nishi, purchasing):
+    supplier, h = nishi
+    sid = (await client.post("/supplier/catalog/sections", headers=h,
+                             json={"title": "Held"})).json()["section_id"]
+    pid = (await client.post("/supplier/catalog/products", headers=h,
+                             json={"section_id": sid, "heading": "Held item"})).json()["product_id"]
+    r = await client.post(f"/supplier/catalog/products/{pid}/offers", headers=h,
+                          json={"price": "200", "mrp": "150", "units_per_box": 10})
+    assert r.status_code == 201 and r.json()["held_reason"] == "price_above_mrp"
+    oid = r.json()["offer_id"]
+    msg = (await client.get("/supplier/catalog/message", headers=h)).json()["text"]
+    assert "(200/150)" not in msg
+    held = (await client.get(f"/held-offers?supplier_id={supplier['supplier_id']}",
+                             headers=purchasing.headers)).json()
+    assert [(x["offer_id"], x["held_reason"]) for x in held] == [(oid, "price_above_mrp")]
+    # the supplier fixes it: label gone, line shared again
+    r = await client.patch(f"/supplier/catalog/offers/{oid}", headers=h, json={"mrp": "250"})
+    assert r.json()["held_reason"] is None
+    assert "(200/250)(10)" in (await client.get("/supplier/catalog/message",
+                                                headers=h)).json()["text"]
+    assert (await client.get(f"/held-offers?supplier_id={supplier['supplier_id']}",
+                             headers=purchasing.headers)).json() == []
+
+
+async def test_import_holds_price_above_mrp_without_asking(client, nishi):
+    _, h = nishi
+    text = FIXTURE.replace("(125/165)(150)", "(190/165)(150)")
+    p = (await client.post("/supplier/catalog/import/preview", headers=h,
+                           json={"text": text})).json()
+    assert [x["raw"] for x in p["held"]] == ["(190/165)(150)"]
+    assert len(p["flagged"]) == 6  # the usual six; the held line needs no answer
+    r = await client.post("/supplier/catalog/import", headers=h,
+                          json={"text": text, "resolutions": answers_for(text)})
+    assert r.status_code == 200, r.text
+    msg = (await client.get("/supplier/catalog/message", headers=h)).json()["text"]
+    assert "(190/165)" not in msg and "(424/530)(36) 4+1 free pack" in msg

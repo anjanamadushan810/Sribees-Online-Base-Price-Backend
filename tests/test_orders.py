@@ -58,9 +58,6 @@ async def test_order_flow_and_base_price(client, owner, purchasing, shop):
     assert o["order_no"].startswith("SPO-") and o["status"] == "draft"
 
     r = await client.post(f"/orders/{oid}/lines", headers=purchasing.headers,
-                          json={"offer_id": shop["unmatched"], "boxes": 1})
-    assert r.status_code == 409 and "match" in r.json()["detail"]
-    r = await client.post(f"/orders/{oid}/lines", headers=purchasing.headers,
                           json={"offer_id": shop["soap"], "boxes": 2})
     assert r.status_code == 200, r.text
     line = r.json()["lines"][0]
@@ -271,3 +268,44 @@ async def test_branch_manager_cannot_edit_purchasings_draft(client, purchasing, 
     r = await client.post(f"/orders/{o['order_id']}/lines", headers=manager.headers,
                           json={"offer_id": shop["soap"], "boxes": 1})
     assert r.status_code == 403
+
+
+# ---------------------------------------------------------------- owner 2026-11-12
+async def test_unmatched_offer_can_be_ordered_without_base_price(client, owner, shop):
+    o = await new_order(client, owner, shop)
+    oid = o["order_id"]
+    r = await client.post(f"/orders/{oid}/lines", headers=owner.headers,
+                          json={"offer_id": shop["unmatched"], "boxes": 1})
+    assert r.status_code == 200, r.text
+    assert r.json()["lines"][0]["online_product_id"] is None
+    assert (await client.post(f"/orders/{oid}/submit",
+                              headers=owner.headers)).json()["status"] == "approved"
+    r = await client.post(f"/supplier/orders/{oid}/answer", headers=shop["sh"],
+                          json={"accept": True})
+    assert r.json()["status"] == "accepted"
+    current = (await client.get("/base-prices", headers=owner.headers)).json()
+    assert all(c["order_id"] != oid for c in current)  # written at receiving instead
+
+
+async def test_held_line_cannot_be_ordered(client, owner, shop):
+    await client.patch(f"/supplier/catalog/offers/{shop['coke']}", headers=shop["sh"],
+                       json={"price": "500"})  # above its MRP of 420 -> held
+    o = await new_order(client, owner, shop)
+    r = await client.post(f"/orders/{o['order_id']}/lines", headers=owner.headers,
+                          json={"offer_id": shop["coke"], "boxes": 1})
+    assert r.status_code == 409 and "held" in r.json()["detail"]
+
+
+async def test_cancel_note_is_staff_only(client, owner, shop):
+    o = await new_order(client, owner, shop)
+    oid = o["order_id"]
+    await client.post(f"/orders/{oid}/lines", headers=owner.headers,
+                      json={"offer_id": shop["soap"], "boxes": 1})
+    await client.post(f"/orders/{oid}/submit", headers=owner.headers)
+    r = await client.post(f"/orders/{oid}/cancel", headers=owner.headers,
+                          json={"reason": "branch is full this week",
+                                "note": "found it cheaper elsewhere"})
+    assert r.json()["cancel_note"] == "found it cheaper elsewhere"
+    mine = (await client.get(f"/supplier/orders/{oid}", headers=shop["sh"])).json()
+    assert mine["cancel_reason"] == "branch is full this week"
+    assert "cancel_note" not in mine and "cheaper" not in str(mine)

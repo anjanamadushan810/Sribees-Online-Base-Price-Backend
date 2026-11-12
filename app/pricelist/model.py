@@ -30,7 +30,13 @@ class Offer:
 
     @property
     def needs_review(self) -> bool:
-        return bool(self.flags)
+        """Flags a person must answer. Price above MRP is not one: such a line is
+        imported but HELD (owner, 2026-11-12) until the supplier fixes it."""
+        return any(f != FLAG_PRICE_ABOVE_MRP for f in self.flags)
+
+    @property
+    def held(self) -> bool:
+        return self.mrp is not None and self.price > self.mrp
 
 
 @dataclass

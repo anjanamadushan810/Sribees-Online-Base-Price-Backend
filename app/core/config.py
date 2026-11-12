@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     otp_max_per_ip_hour: int = 20
     # "fake" keeps codes in memory (tests, development); "textlk" sends real SMS.
     sms_provider: str = Field(default="fake", pattern="^(fake|textlk)$")
+    textlk_api_token: str = ""
+    textlk_sender_id: str = ""
+    textlk_base_url: str = "https://app.text.lk/api/v3"
     # Development only: this code always works for registered numbers, so nobody needs
     # an SMS on the dev server. Refused in production.
     dev_fixed_otp: str = ""

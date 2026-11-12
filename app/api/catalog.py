@@ -15,6 +15,7 @@ from app.api.schemas import (
     CatalogOut,
     CatalogProductOut,
     CatalogSectionOut,
+    HeldOfferOut,
     ImportIn,
     ImportPreviewOut,
     ImportResultOut,
@@ -195,3 +196,11 @@ async def supplier_import(supplier_id: uuid.UUID, body: ImportIn,
                                        actor=Actor(user_id=p.user_id),
                                        use_header_footer=body.use_header_footer)
     return ImportResultOut(**{k: v for k, v in result.__dict__.items() if k != "changed"})
+
+
+@router.get("/held-offers", response_model=list[HeldOfferOut])
+async def held_offers(supplier_id: uuid.UUID | None = None,
+                      _: Principal = Depends(require("suppliers.read")),
+                      db: AsyncSession = Depends(get_db)):
+    """Staff label list: price lines held back (e.g. our price above the selling price)."""
+    return await catalog.held_offers(db, supplier_id)

@@ -23,6 +23,7 @@ class Offer:
     units_per_box: int | None
     label: str = ""  # text after the brackets: "250ml", "Promo", "4+1 free pack"
     raw: str = ""  # the line exactly as the supplier wrote it
+    line_no: int = 0  # 1-based line in the pasted text (0 = not from a paste)
     flags: list[str] = field(default_factory=list)
     extra: list[str] = field(default_factory=list)  # bracket contents we could not place
     active: bool = True

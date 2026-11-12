@@ -161,7 +161,9 @@ def parse(text: str) -> PriceList:
                 # Offer with no heading at all: keep it, under an empty heading to review.
                 product = Product(heading="")
                 section.products.append(product)
-            product.offers.append(parse_offer(s))
+            offer = parse_offer(s)
+            offer.line_no = first_section + i + 1
+            product.offers.append(offer)
             continue
         # Plain text.
         if product is None:

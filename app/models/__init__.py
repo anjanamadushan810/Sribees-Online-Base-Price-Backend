@@ -3,8 +3,19 @@ truth; mappings list only what the code uses."""
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -87,6 +98,8 @@ class Supplier(Base):
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.user_id")
     )
+    price_list_header: Mapped[str] = mapped_column(Text, default="")
+    price_list_footer: Mapped[str] = mapped_column(Text, default="")
 
     users: Mapped[list["SupplierUser"]] = relationship(
         back_populates="supplier", lazy="selectin", order_by="SupplierUser.created_at"
@@ -159,3 +172,72 @@ class AuditLog(Base):
     before: Mapped[dict | None] = mapped_column(JSONB)
     after: Mapped[dict | None] = mapped_column(JSONB)
     ip_address: Mapped[str | None] = mapped_column(String(64))
+
+
+# ---------------------------------------------------------------- supplier catalogue (0002)
+class SupplierSection(Base):
+    __tablename__ = "supplier_sections"
+
+    section_id: Mapped[uuid.UUID] = _uuid_pk()
+    supplier_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("suppliers.supplier_id")
+    )
+    title: Mapped[str] = mapped_column(String(150))
+    notes: Mapped[list] = mapped_column(JSONB, default=list)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SupplierProduct(Base):
+    __tablename__ = "supplier_products"
+
+    product_id: Mapped[uuid.UUID] = _uuid_pk()
+    supplier_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    section_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    heading: Mapped[str] = mapped_column(String(200))
+    notes_before: Mapped[list] = mapped_column(JSONB, default=list)
+    notes_after: Mapped[list] = mapped_column(JSONB, default=list)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SupplierOffer(Base):
+    __tablename__ = "supplier_offers"
+
+    offer_id: Mapped[uuid.UUID] = _uuid_pk()
+    supplier_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    product_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    label: Mapped[str] = mapped_column(String(120), default="")
+    price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    mrp: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    units_per_box: Mapped[int | None] = mapped_column(Integer)
+    extra: Mapped[list] = mapped_column(JSONB, default=list)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SupplierOfferPrice(Base):
+    __tablename__ = "supplier_offer_prices"
+
+    history_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    offer_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    supplier_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    mrp: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    units_per_box: Mapped[int | None] = mapped_column(Integer)
+    source: Mapped[str] = mapped_column(String(10))
+    supplier_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    changed_at: Mapped[datetime] = _created()

@@ -168,3 +168,166 @@ class SupplierMeOut(BaseModel):
     language: str
     supplier_id: uuid.UUID
     supplier_name: str
+
+
+# ---------------------------------------------------------------- supplier catalogue
+NoteList = list[Annotated[str, Field(max_length=300)]]
+
+
+class OfferOut(ORM):
+    offer_id: uuid.UUID
+    label: str
+    price: Money
+    mrp: Money | None
+    units_per_box: int | None
+    extra: list[str]
+    is_active: bool
+
+
+class CatalogProductOut(ORM):
+    product_id: uuid.UUID
+    heading: str
+    notes_before: list[str]
+    notes_after: list[str]
+    is_active: bool
+    offers: list[OfferOut] = []
+
+
+class CatalogSectionOut(ORM):
+    section_id: uuid.UUID
+    title: str
+    notes: list[str]
+    is_active: bool
+    products: list[CatalogProductOut] = []
+
+
+class CatalogOut(BaseModel):
+    supplier_id: uuid.UUID
+    supplier_name: str
+    header: str
+    footer: str
+    sections: list[CatalogSectionOut]
+
+
+class PasteIn(BaseModel):
+    text: str = Field(min_length=1, max_length=200_000)
+
+
+class ResolutionIn(BaseModel):
+    line_no: int = Field(ge=1)
+    skip: bool = False
+    price: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
+    mrp: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
+    units_per_box: int | None = Field(default=None, gt=0)
+    label: str | None = Field(default=None, max_length=120)
+
+
+class ImportIn(PasteIn):
+    resolutions: list[ResolutionIn] = []
+    use_header_footer: bool = True
+
+
+class FlaggedLineOut(BaseModel):
+    line_no: int
+    raw: str
+    heading: str
+    section: str
+    flags: list[str]
+    price: Money
+    mrp: Money | None
+    units_per_box: int | None
+    label: str
+    extra: list[str]
+
+
+class ChangedOfferOut(BaseModel):
+    line_no: int
+    heading: str
+    label: str
+    old_price: Money
+    new_price: Money
+    old_mrp: Money | None
+    new_mrp: Money | None
+    old_units: int | None
+    new_units: int | None
+
+
+class ImportPreviewOut(BaseModel):
+    sections: int
+    products: int
+    offers: int
+    new_sections: int
+    new_products: int
+    new_offers: int
+    changed_offers: list[ChangedOfferOut]
+    same_offers: int
+    flagged: list[FlaggedLineOut]
+    has_header: bool
+    has_footer: bool
+
+
+class ImportResultOut(BaseModel):
+    sections_new: int
+    products_new: int
+    offers_new: int
+    offers_changed: int
+    offers_same: int
+    offers_skipped: int
+    not_in_paste: int
+
+
+class TemplateIn(BaseModel):
+    header: str = Field(default="", max_length=5000)
+    footer: str = Field(default="", max_length=5000)
+
+
+class MessageOut(BaseModel):
+    text: str
+
+
+class SectionIn(BaseModel):
+    title: str = Field(min_length=1, max_length=150)
+
+
+class SectionPatch(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=150)
+    notes: NoteList | None = None
+    is_active: bool | None = None
+
+
+class ProductIn(BaseModel):
+    section_id: uuid.UUID
+    heading: str = Field(min_length=1, max_length=200)
+    notes_before: NoteList = []
+    notes_after: NoteList = []
+
+
+class ProductPatch(BaseModel):
+    section_id: uuid.UUID | None = None
+    heading: str | None = Field(default=None, min_length=1, max_length=200)
+    notes_before: NoteList | None = None
+    notes_after: NoteList | None = None
+    is_active: bool | None = None
+
+
+class OfferIn(BaseModel):
+    label: str = Field(default="", max_length=120)
+    price: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    mrp: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
+    units_per_box: int | None = Field(default=None, gt=0)
+
+
+class OfferPatch(BaseModel):
+    label: str | None = Field(default=None, max_length=120)
+    price: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
+    mrp: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
+    units_per_box: int | None = Field(default=None, gt=0)
+    is_active: bool | None = None
+
+
+class OfferPriceOut(ORM):
+    price: Money
+    mrp: Money | None
+    units_per_box: int | None
+    source: str
+    changed_at: datetime

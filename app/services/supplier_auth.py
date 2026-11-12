@@ -9,7 +9,7 @@ Rules
   registered (no enumeration, and no SMS cost for strangers).
 - Limits: one code per OTP_RESEND_SECONDS, OTP_MAX_PER_PHONE_HOUR per number,
   OTP_MAX_PER_IP_HOUR per address. A code dies after OTP_MAX_ATTEMPTS wrong tries or
-  OTP_MINUTES, and works once. Only the newest code of a number is valid.
+  OTP_MINUTES, and works once. The newest LIVE_CODES live codes are valid.
 - Codes are stored as an HMAC only.
 """
 
@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import security
@@ -26,6 +26,8 @@ from app.core.phone import InvalidPhone, normalise_mobile
 from app.models import Supplier, SupplierOtp, SupplierSession, SupplierUser
 from app.services import audit, sms
 from app.services.errors import SupplyError
+
+LIVE_CODES = 3
 
 
 class SignInError(SupplyError):
@@ -62,11 +64,22 @@ async def _active_user(db: AsyncSession, phone: str) -> SupplierUser | None:
     return user if supplier is not None and supplier.is_active else None
 
 
+async def _serialise(db: AsyncSession, *keys: str) -> None:
+    """Concurrent requests for the same phone / address wait for each other, so the
+    counts below cannot be raced past (review 2026-11-12 #2)."""
+    for key in sorted(set(keys)):
+        await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": key})
+
+
 async def request_code(db: AsyncSession, *, phone: str, ip: str | None) -> None:
     settings = get_settings()
     phone = _phone(phone)
+    # Fail the same way for every number when SMS is not available, so a broken sender
+    # cannot tell registered numbers from strangers (review #9).
+    sender = sms.get_sender()
     now = _now()
     hour_ago = now - timedelta(hours=1)
+    await _serialise(db, f"otp:phone:{phone}", f"otp:ip:{ip or '-'}")
 
     if ip:
         per_ip = await db.scalar(
@@ -76,14 +89,18 @@ async def request_code(db: AsyncSession, *, phone: str, ip: str | None) -> None:
         if per_ip >= settings.otp_max_per_ip_hour:
             raise TooMany("too many requests; try again later")
 
-    recent = (await db.scalars(
-        select(SupplierOtp.created_at)
+    recent = (await db.execute(
+        select(SupplierOtp.created_at, SupplierOtp.ip_address)
         .where(SupplierOtp.phone == phone, SupplierOtp.created_at > hour_ago)
         .order_by(SupplierOtp.created_at.desc())
     )).all()
-    if recent and (now - recent[0]).total_seconds() < settings.otp_resend_seconds:
+    if recent and (now - recent[0].created_at).total_seconds() < settings.otp_resend_seconds:
         raise TooMany("wait a minute before asking for a new code")
-    if len(recent) >= settings.otp_max_per_phone_hour:
+    # Per number AND address, plus a higher cap for the number from everywhere: one
+    # stranger cannot use up the supplier's own requests (review #3).
+    from_here = sum(1 for r in recent if r.ip_address == ip)
+    if (from_here >= settings.otp_max_per_phone_hour
+            or len(recent) >= settings.otp_max_per_phone_hour_total):
         raise TooMany("too many codes for this number; try again in an hour")
 
     user = await _active_user(db, phone)
@@ -99,9 +116,7 @@ async def request_code(db: AsyncSession, *, phone: str, ip: str | None) -> None:
     ))
     await db.flush()
     if user and code:
-        await sms.get_sender().send(
-            phone, sms.otp_text(code, user.language, settings.otp_minutes)
-        )
+        await sender.send(phone, sms.otp_text(code, user.language, settings.otp_minutes))
 
 
 async def verify_code(
@@ -120,24 +135,30 @@ async def verify_code(
     if fixed and settings.environment != "production" and code == fixed:
         return await _issue(db, user, ip, user_agent)
 
-    otp = await db.scalar(
-        select(SupplierOtp)
-        .where(SupplierOtp.phone == phone)
-        .order_by(SupplierOtp.created_at.desc(), SupplierOtp.otp_id.desc())
-        .limit(1)
-        .with_for_update()
-    )
     now = _now()
-    if (otp is None or otp.code_hash is None or otp.used_at is not None
-            or otp.expires_at <= now or otp.attempts >= settings.otp_max_attempts):
+    # The newest few live codes all work, so a stranger asking for codes cannot keep
+    # killing the one the supplier is typing (review #3). A wrong guess costs an attempt
+    # on every live code, so the guess budget does not grow with the number of codes.
+    live = (await db.scalars(
+        select(SupplierOtp)
+        .where(SupplierOtp.phone == phone, SupplierOtp.code_hash.is_not(None),
+               SupplierOtp.used_at.is_(None), SupplierOtp.expires_at > now,
+               SupplierOtp.attempts < settings.otp_max_attempts)
+        .order_by(SupplierOtp.created_at.desc(), SupplierOtp.otp_id.desc())
+        .limit(LIVE_CODES)
+        .with_for_update()
+    )).all()
+    if not live:
         raise wrong
-    if not security.otp_matches(otp.code_hash, phone, code):
-        otp.attempts += 1
+    if not any(security.otp_matches(o.code_hash, phone, code) for o in live):
+        for o in live:
+            o.attempts += 1
         await audit.record(db, supplier_user_id=user.supplier_user_id,
                            action="supplier_auth.code_failed", entity="supplier_user",
                            entity_id=user.supplier_user_id, ip_address=ip)
         raise wrong
-    otp.used_at = now
+    for o in live:  # one success ends every live code
+        o.used_at = now
     return await _issue(db, user, ip, user_agent)
 
 

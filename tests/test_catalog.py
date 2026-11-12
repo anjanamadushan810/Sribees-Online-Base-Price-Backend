@@ -304,3 +304,38 @@ async def test_price_history_is_append_only(client, nishi):
     with pytest.raises(Exception, match="cannot be changed"):
         async with get_sessionmaker()() as s, s.begin():
             await s.execute(text("UPDATE supplier_offer_prices SET price = 1"))
+
+
+# ---------------------------------------------------------------- review 2026-11-12
+@pytest.mark.parametrize(("url_part", "body"), [
+    ("offers", {"label": None}), ("offers", {"is_active": None}),
+    ("offers", {"price": "200", "mrp": "150"}), ("offers", {"units_per_box": 1_000_001}),
+    ("products", {"heading": None}), ("products", {"is_active": None}),
+])
+async def test_bad_patches_are_422_not_500(client, nishi, url_part, body):
+    _, h = nishi
+    sid = (await client.post("/supplier/catalog/sections", headers=h,
+                             json={"title": "Nulls"})).json()["section_id"]
+    pid = (await client.post("/supplier/catalog/products", headers=h,
+                             json={"section_id": sid, "heading": "N"})).json()["product_id"]
+    oid = (await client.post(f"/supplier/catalog/products/{pid}/offers", headers=h,
+                             json={"price": "10", "mrp": "12"})).json()["offer_id"]
+    target = oid if url_part == "offers" else pid
+    r = await client.patch(f"/supplier/catalog/{url_part}/{target}", headers=h, json=body)
+    assert r.status_code == 422, r.text
+
+
+async def test_preview_warns_when_a_heading_gains_or_loses_lines(client, nishi):
+    _, h = nishi
+    await imported(client, h)
+    # Signal 40g has two unlabelled lines; dropping one could shift the other's price.
+    shorter = FIXTURE.replace("(107/130)(72)\n", "")
+    p = (await client.post("/supplier/catalog/import/preview", headers=h,
+                           json={"text": shorter})).json()
+    assert [(x["heading"], x["label"], x["before"], x["after"]) for x in p["reshaped"]] == [
+        ("සිග්නල් 40g", "", 2, 1)]
+    # a heading with distinct notes losing one line is safe: no warning
+    safe = FIXTURE.replace("(424/530)(36) 4+1 free pack\n", "")
+    p = (await client.post("/supplier/catalog/import/preview", headers=h,
+                           json={"text": safe})).json()
+    assert p["reshaped"] == []

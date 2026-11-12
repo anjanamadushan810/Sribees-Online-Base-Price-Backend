@@ -35,6 +35,8 @@ async def create(db: AsyncSession, *, name: str, notes: str | None,
 
 async def update(db: AsyncSession, supplier_id: uuid.UUID, *, changes: dict,
                  user_id: uuid.UUID) -> Supplier:
+    if any(v is None for k, v in changes.items() if k != "notes"):
+        raise SupplyError("name and active cannot be empty")
     supplier = await get(db, supplier_id)
     before = {k: getattr(supplier, k) for k in changes}
     if "name" in changes:
@@ -79,6 +81,8 @@ async def update_user(db: AsyncSession, supplier_id: uuid.UUID, supplier_user_id
     su = await db.get(SupplierUser, supplier_user_id)
     if su is None or su.supplier_id != supplier_id:
         raise NotFound("supplier user not found")
+    if any(v is None for v in changes.values()):
+        raise SupplyError("fields cannot be empty")
     before = {k: getattr(su, k) for k in changes}
     for key, value in changes.items():
         setattr(su, key, value)

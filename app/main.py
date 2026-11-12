@@ -17,6 +17,8 @@ _DB_RULE_ERRORS = {
     "23514": 422,  # check_violation
     "23001": 409,  # restrict_violation - audit log touched
     "23505": 409,  # unique_violation
+    "23502": 422,  # not_null_violation
+    "22003": 422,  # numeric_value_out_of_range
 }
 
 

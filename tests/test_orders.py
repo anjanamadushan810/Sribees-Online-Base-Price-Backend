@@ -206,3 +206,68 @@ async def test_database_refuses_line_changes_after_submit(client, owner, shop):
         async with get_sessionmaker()() as s, s.begin():
             await s.execute(text("UPDATE supply_order_lines SET boxes = 99 "
                                  "WHERE order_id = :o"), {"o": o["order_id"]})
+
+
+# ---------------------------------------------------------------- review 2026-11-12
+async def test_rematched_or_withdrawn_offer_cannot_be_submitted(client, owner, purchasing, shop):
+    """Review #1 (HIGH): a line must not carry a stale match to a base price."""
+    o = await new_order(client, purchasing, shop)
+    oid = o["order_id"]
+    await client.post(f"/orders/{oid}/lines", headers=purchasing.headers,
+                      json={"offer_id": shop["soap"], "boxes": 1})
+    # staff correct the match after the line was added
+    r = await client.post(f"/matching/offers/{shop['soap']}/confirm", headers=purchasing.headers,
+                          json={"online_product_id": str(COKE_15)})
+    assert r.status_code == 204
+    r = await client.post(f"/orders/{oid}/submit", headers=owner.headers)
+    assert r.status_code == 409 and "changed" in r.json()["detail"]
+    # put the match back: submit works; then withdraw the offer: approve is refused
+    await client.post(f"/matching/offers/{shop['soap']}/confirm", headers=purchasing.headers,
+                      json={"online_product_id": str(CHERAMY_75)})
+    assert (await client.post(f"/orders/{oid}/submit",
+                              headers=purchasing.headers)).status_code == 200
+    await client.patch(f"/supplier/catalog/offers/{shop['soap']}", headers=shop["sh"],
+                       json={"is_active": False})
+    r = await client.post(f"/orders/{oid}/approve", headers=owner.headers)
+    assert r.status_code == 409
+
+
+async def test_rematch_after_approval_writes_no_base_price_for_that_line(client, owner,
+                                                                          purchasing, shop):
+    o = await new_order(client, owner, shop)
+    oid = o["order_id"]
+    await client.post(f"/orders/{oid}/lines", headers=owner.headers,
+                      json={"offer_id": shop["coke"], "boxes": 1})
+    assert (await client.post(f"/orders/{oid}/submit",
+                              headers=owner.headers)).json()["status"] == "approved"
+    await client.post(f"/matching/offers/{shop['coke']}/confirm", headers=purchasing.headers,
+                      json={"online_product_id": str(CHERAMY_75)})
+    r = await client.post(f"/supplier/orders/{oid}/answer", headers=shop["sh"],
+                          json={"accept": True})
+    assert r.json()["status"] == "accepted"
+    for pid in (COKE_15, CHERAMY_75):
+        bp = (await client.get(f"/base-prices/{pid}", headers=owner.headers)).json()
+        assert all(h["order_id"] != oid for h in bp["history"])
+    assert "order.accepted" in await outbox_events(oid)
+
+
+async def test_delivery_charge_is_capped(client, owner, shop):
+    o = await new_order(client, owner, shop)
+    oid = o["order_id"]
+    await client.post(f"/orders/{oid}/lines", headers=owner.headers,
+                      json={"offer_id": shop["soap"], "boxes": 1})  # 150 x 125 = 18,750
+    await client.post(f"/orders/{oid}/submit", headers=owner.headers)
+    r = await client.post(f"/supplier/orders/{oid}/answer", headers=shop["sh"],
+                          json={"accept": True, "delivery_charge": "9999999"})
+    assert r.status_code == 422 and "4,687.50" in r.json()["detail"]
+    r = await client.post(f"/supplier/orders/{oid}/answer", headers=shop["sh"],
+                          json={"accept": True, "delivery_charge": "4687.50"})
+    assert r.status_code == 200
+
+
+async def test_branch_manager_cannot_edit_purchasings_draft(client, purchasing, shop):
+    manager = await sign_in(client, "branch_manager", branch_ids=[shop["branch"]])
+    o = await new_order(client, purchasing, shop)
+    r = await client.post(f"/orders/{o['order_id']}/lines", headers=manager.headers,
+                          json={"offer_id": shop["soap"], "boxes": 1})
+    assert r.status_code == 403

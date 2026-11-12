@@ -57,6 +57,34 @@ def order_totals(order: SupplyOrder) -> dict:
             "total": goods + (order.delivery_charge or Decimal(0))}
 
 
+MAX_LINE_TOTAL = Decimal("100000000000")  # Rs 100 billion: fits numeric(14,2) with room
+
+
+async def _stale_lines(db: AsyncSession, order: SupplyOrder) -> list[str]:
+    """Lines whose offer, item, price, units or confirmed match changed since they were
+    added (review 2026-11-12 #1: a corrected match must never carry an old line's base
+    price onto the wrong Online product)."""
+    stale = []
+    for ln in order.lines:
+        offer = await db.get(SupplierOffer, ln.offer_id, with_for_update=True)
+        product = await db.get(SupplierProduct, offer.product_id) if offer else None
+        match = await db.scalar(select(OfferMatch).where(
+            OfferMatch.offer_id == ln.offer_id, OfferMatch.status == "confirmed"))
+        if (offer is None or product is None or not offer.is_active or not product.is_active
+                or offer.price != ln.unit_price or offer.units_per_box != ln.units_per_box
+                or match is None or match.online_product_id != ln.online_product_id
+                or match.online_variant_id != ln.online_variant_id):
+            stale.append(f"{ln.heading} {ln.label}".strip())
+    return stale
+
+
+async def _refuse_stale(db: AsyncSession, order: SupplyOrder) -> None:
+    stale = await _stale_lines(db, order)
+    if stale:
+        raise Conflict("these lines changed since they were added (price, units, match or "
+                       "no longer offered); remove and add them again: " + ", ".join(stale))
+
+
 # ---------------------------------------------------------------- staff side
 class StaffActor:
     """The parts of a signed-in staff user the rules need."""
@@ -99,7 +127,10 @@ async def list_orders(db: AsyncSession, actor: StaffActor, *, supplier_id=None,
 def _can_edit(order: SupplyOrder, actor: StaffActor) -> None:
     if order.status != "draft":
         raise Conflict("only a draft order can be changed")
-    if not (actor.can("orders.create") or actor.can("orders.request")):
+    if actor.can("orders.create"):
+        return
+    # A branch manager changes only the requests they raised (review #8).
+    if not (actor.can("orders.request") and order.created_by == actor.user_id):
         raise Forbidden("you do not have access to this")
 
 
@@ -146,6 +177,8 @@ async def add_line(db: AsyncSession, actor: StaffActor, order_id: uuid.UUID, *,
         raise Conflict("match this offer to an Online product before ordering it")
     if any(ln.offer_id == offer_id for ln in order.lines):
         raise Conflict("this offer is already on the order; change its boxes instead")
+    if boxes * offer.units_per_box * offer.price > MAX_LINE_TOTAL:
+        raise SupplyError("this line is too large")
     db.add(SupplyOrderLine(
         order_id=order.order_id, supplier_id=order.supplier_id, offer_id=offer_id,
         online_product_id=match.online_product_id, online_variant_id=match.online_variant_id,
@@ -166,6 +199,8 @@ async def set_boxes(db: AsyncSession, actor: StaffActor, order_id: uuid.UUID,
     if boxes <= 0:
         await db.delete(line)
     else:
+        if boxes * line.units_per_box * line.unit_price > MAX_LINE_TOTAL:
+            raise SupplyError("this line is too large")
         line.boxes = boxes
     await db.flush()
     await db.refresh(order, ["lines"])
@@ -182,6 +217,7 @@ async def submit(db: AsyncSession, actor: StaffActor, order_id: uuid.UUID) -> Su
         raise Conflict("only a draft order can be submitted")
     if not order.lines:
         raise SupplyError("add at least one line first")
+    await _refuse_stale(db, order)
     order.status, order.submitted_by, order.submitted_at = "submitted", actor.user_id, _now()
     totals = order_totals(order)
     _emit(db, "order.submitted", order, goods_total=str(totals["goods_total"]),
@@ -216,6 +252,7 @@ async def approve(db: AsyncSession, actor: StaffActor, order_id: uuid.UUID) -> S
         raise Conflict("only a submitted order can be approved")
     if order.submitted_by == actor.user_id and actor.role not in SELF_APPROVING_ROLES:
         raise Forbidden("you cannot approve your own order")
+    await _refuse_stale(db, order)
     await _approve(db, order, actor.user_id)
     await db.flush()
     return order
@@ -285,17 +322,31 @@ async def answer(db: AsyncSession, supplier_id: uuid.UUID, supplier_user_id: uui
     order.status = "accepted" if accept else "declined"
     order.answered_at, order.answered_by = now, supplier_user_id
     order.supplier_note = (note or "").strip() or None
+    skipped: list[str] = []
     if accept:
         if delivery_charge is not None:
+            goods = order_totals(order)["goods_total"]
+            cap = (goods * get_settings().delivery_charge_max_pct / 100).quantize(Decimal("0.01"))
+            if delivery_charge > cap:
+                raise SupplyError(f"delivery charge can be at most Rs {cap:,.2f} for this "
+                                  "order; call Sribees for more")
             order.delivery_charge = delivery_charge
         for ln in order.lines:
+            # The supplier agreed to the line as approved; but if staff re-matched the offer
+            # since, the line's product is no longer trusted for a base price (review #1).
+            match = await db.scalar(select(OfferMatch).where(
+                OfferMatch.offer_id == ln.offer_id, OfferMatch.status == "confirmed"))
+            if (match is None or match.online_product_id != ln.online_product_id
+                    or match.online_variant_id != ln.online_variant_id):
+                skipped.append(str(ln.line_id))
+                continue
             db.add(BasePrice(online_product_id=ln.online_product_id,
                              online_variant_id=ln.online_variant_id, supplier_id=supplier_id,
                              order_id=order.order_id, line_id=ln.line_id,
                              unit_price=ln.unit_price, mrp=ln.mrp, recorded_at=now))
     _emit(db, f"order.{order.status}", order,
           delivery_charge=str(order.delivery_charge) if order.delivery_charge is not None
-          else None)
+          else None, base_price_skipped_lines=skipped)
     await audit.record(db, supplier_user_id=supplier_user_id, action=f"order.{order.status}",
                        entity="order", entity_id=order.order_id,
                        after={"delivery_charge": str(delivery_charge)

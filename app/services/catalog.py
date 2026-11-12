@@ -12,7 +12,7 @@ cannot be probed.
 from __future__ import annotations
 
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
 
@@ -113,13 +113,27 @@ def _history(offer: SupplierOffer, actor: Actor, source: str) -> SupplierOfferPr
     )
 
 
+MAX_UNITS_PER_BOX = 100_000
+
+
 def _check_money(price: Decimal, mrp: Decimal | None, units: int | None) -> None:
     if price is None or price <= 0:
         raise SupplyError("price must be more than 0")
     if mrp is not None and mrp <= 0:
         raise SupplyError("selling price must be more than 0")
-    if units is not None and units <= 0:
-        raise SupplyError("units per box must be more than 0")
+    if mrp is not None and price > mrp:
+        raise SupplyError("our price is above the selling price")
+    if units is not None and not 0 < units <= MAX_UNITS_PER_BOX:
+        raise SupplyError(f"units per box must be between 1 and {MAX_UNITS_PER_BOX:,}")
+
+
+def _no_nulls(changes: dict, nullable: tuple[str, ...] = ()) -> dict:
+    """PATCH bodies: an explicit null is refused except where "unknown" is meaningful
+    (review #6: it used to end in a 500)."""
+    bad = [k for k, v in changes.items() if v is None and k not in nullable]
+    if bad:
+        raise SupplyError(f"{', '.join(bad)} cannot be empty")
+    return changes
 
 
 # ---------------------------------------------------------------- read
@@ -215,9 +229,10 @@ def _resolve(o: Offer, resolutions: dict[int, Resolution]) -> Offer | None:
     price = r.price if r.price is not None else o.price
     mrp = r.mrp if r.mrp is not None else o.mrp
     units = r.units_per_box if r.units_per_box is not None else o.units_per_box
-    _check_money(price, mrp, units)
-    if mrp is not None and price > mrp:
-        raise SupplyError(f"line {o.line_no}: buying price is above the selling price")
+    try:
+        _check_money(price, mrp, units)
+    except SupplyError as exc:
+        raise SupplyError(f"line {o.line_no}: {exc.message}") from None
     return Offer(price=price, mrp=mrp, units_per_box=units,
                  label=r.label if r.label is not None else o.label, raw=o.raw,
                  line_no=o.line_no)
@@ -235,7 +250,7 @@ async def preview(db: AsyncSession, supplier_id: uuid.UUID, pasted: str) -> dict
         raise SupplyError("no price list found: lines like '🛑🛑 Section 🛑🛑' and "
                           "'(125/165)(150)' are needed")
     by_title, products, by_product = await _existing_index(db, supplier_id)
-    flagged, changed = [], []
+    flagged, changed, reshaped = [], [], []
     new_products = new_offers = same = 0
     seen: dict[tuple, int] = defaultdict(int)
     for s in pl.sections:
@@ -247,6 +262,16 @@ async def preview(db: AsyncSession, supplier_id: uuid.UUID, pasted: str) -> dict
             if row is not None:
                 rows = by_product[row.product_id]
                 existing = dict(zip(_offer_keys(rows), rows, strict=True))
+                # Offers are matched by (note, position): when a heading gains or loses
+                # lines, unlabelled ones may shift onto a sibling (review #5) - say so.
+                # Lines sharing a note are told apart only by position, so when such a
+                # group grows or shrinks a price can shift onto its sibling.
+                was = Counter(r.label for r in rows if r.is_active)
+                now = Counter(o.label for o in p.offers if not o.needs_review)
+                for lbl in set(was) | set(now):
+                    if was[lbl] != now[lbl] and max(was[lbl], now[lbl]) >= 2:
+                        reshaped.append({"heading": p.heading, "section": s.title,
+                                         "label": lbl, "before": was[lbl], "after": now[lbl]})
             else:
                 new_products += 1
             for key, o in zip(_offer_keys(p.offers), p.offers, strict=True):
@@ -277,6 +302,7 @@ async def preview(db: AsyncSession, supplier_id: uuid.UUID, pasted: str) -> dict
         "changed_offers": changed,
         "same_offers": same,
         "flagged": flagged,
+        "reshaped": reshaped,
         "has_header": bool(pl.header),
         "has_footer": bool(pl.footer),
     }
@@ -412,6 +438,8 @@ async def add_section(db, supplier_id, *, title: str, actor: Actor) -> SupplierS
 
 async def update_section(db, supplier_id, section_id, *, changes: dict,
                          actor: Actor) -> SupplierSection:
+    _no_nulls(changes)
+    await _lock(db, supplier_id)
     section = await _section(db, supplier_id, section_id)
     if "title" in changes:
         changes["title"] = changes["title"].strip()
@@ -432,6 +460,7 @@ async def update_section(db, supplier_id, section_id, *, changes: dict,
 
 async def add_product(db, supplier_id, *, section_id, heading: str, notes_before: list[str],
                       notes_after: list[str], actor: Actor) -> SupplierProduct:
+    await _lock(db, supplier_id)
     await _section(db, supplier_id, section_id)
     last = await db.scalar(select(func.max(SupplierProduct.sort_order))
                            .where(SupplierProduct.section_id == section_id))
@@ -448,6 +477,8 @@ async def add_product(db, supplier_id, *, section_id, heading: str, notes_before
 
 async def update_product(db, supplier_id, product_id, *, changes: dict,
                          actor: Actor) -> SupplierProduct:
+    _no_nulls(changes)
+    await _lock(db, supplier_id)
     product = await _product(db, supplier_id, product_id)
     if "section_id" in changes:
         await _section(db, supplier_id, changes["section_id"])
@@ -466,6 +497,7 @@ async def update_product(db, supplier_id, product_id, *, changes: dict,
 async def add_offer(db, supplier_id, product_id, *, label: str, price: Decimal,
                     mrp: Decimal | None, units_per_box: int | None,
                     actor: Actor) -> SupplierOffer:
+    await _lock(db, supplier_id)
     await _product(db, supplier_id, product_id)
     _check_money(price, mrp, units_per_box)
     last = await db.scalar(select(func.max(SupplierOffer.sort_order))
@@ -484,6 +516,8 @@ async def add_offer(db, supplier_id, product_id, *, label: str, price: Decimal,
 
 async def update_offer(db, supplier_id, offer_id, *, changes: dict,
                        actor: Actor) -> SupplierOffer:
+    _no_nulls(changes, nullable=("mrp", "units_per_box"))
+    await _lock(db, supplier_id)
     offer = await _offer(db, supplier_id, offer_id)
     price = changes.get("price", offer.price)
     mrp = changes["mrp"] if "mrp" in changes else offer.mrp

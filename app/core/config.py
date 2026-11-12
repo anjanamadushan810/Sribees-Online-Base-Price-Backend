@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # Who approves a submitted supplier order: "local" = the owner in Supply (until Finance
     # is live, QUESTIONS.md #9); "finance" = Finance's PO approval answers through the outbox.
     order_approval: str = Field(default="local", pattern="^(local|finance)$")
+    # A supplier's delivery charge on accepting may be at most this % of the goods total
+    # (the owner approved the goods, not an open-ended charge).
+    delivery_charge_max_pct: int = 25
 
     # ---- supplier app (phone + SMS one-time code) ----
     # A supplier signs in rarely on their own phone; SMS costs money, so the session is long.
@@ -42,7 +45,8 @@ class Settings(BaseSettings):
     otp_minutes: int = 5
     otp_max_attempts: int = 5  # wrong codes before a code dies
     otp_resend_seconds: int = 60
-    otp_max_per_phone_hour: int = 5
+    otp_max_per_phone_hour: int = 5  # per number from one address
+    otp_max_per_phone_hour_total: int = 10  # per number from everywhere
     otp_max_per_ip_hour: int = 20
     # "fake" keeps codes in memory (tests, development); "textlk" sends real SMS.
     sms_provider: str = Field(default="fake", pattern="^(fake|textlk)$")

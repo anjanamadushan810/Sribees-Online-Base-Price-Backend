@@ -218,7 +218,7 @@ class ResolutionIn(BaseModel):
     skip: bool = False
     price: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
     mrp: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
-    units_per_box: int | None = Field(default=None, gt=0)
+    units_per_box: int | None = Field(default=None, gt=0, le=100_000)
     label: str | None = Field(default=None, max_length=120)
 
 
@@ -262,6 +262,7 @@ class ImportPreviewOut(BaseModel):
     changed_offers: list[ChangedOfferOut]
     same_offers: int
     flagged: list[FlaggedLineOut]
+    reshaped: list[dict] = []
     has_header: bool
     has_footer: bool
 
@@ -314,14 +315,14 @@ class OfferIn(BaseModel):
     label: str = Field(default="", max_length=120)
     price: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
     mrp: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
-    units_per_box: int | None = Field(default=None, gt=0)
+    units_per_box: int | None = Field(default=None, gt=0, le=100_000)
 
 
 class OfferPatch(BaseModel):
     label: str | None = Field(default=None, max_length=120)
     price: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
     mrp: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
-    units_per_box: int | None = Field(default=None, gt=0)
+    units_per_box: int | None = Field(default=None, gt=0, le=100_000)
     is_active: bool | None = None
 
 

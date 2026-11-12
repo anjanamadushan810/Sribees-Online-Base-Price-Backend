@@ -172,21 +172,35 @@ async def test_expired_code_refused(client, owner):
     assert r.status_code == 401
 
 
-async def test_only_newest_code_counts(client, owner):
+async def test_recent_codes_all_work_until_one_is_used(client, owner):
+    """A stranger asking for codes must not kill the one the supplier is typing."""
     _, su = await new_supplier(client, owner)
     h = ip_headers()
     with settings_override(otp_resend_seconds=0):
         await client.post("/supplier/auth/request-code", json={"phone": su["phone"]}, headers=h)
         first = code_in(last_sms(su["phone"]).text)
-        await client.post("/supplier/auth/request-code", json={"phone": su["phone"]}, headers=h)
+        await client.post("/supplier/auth/request-code", json={"phone": su["phone"]},
+                          headers=ip_headers())
         second = code_in(last_sms(su["phone"]).text)
-    if first != second:
-        r = await client.post("/supplier/auth/verify", headers=h,
-                              json={"phone": su["phone"], "code": first})
-        assert r.status_code == 401
     r = await client.post("/supplier/auth/verify", headers=h,
-                          json={"phone": su["phone"], "code": second})
+                          json={"phone": su["phone"], "code": first})
     assert r.status_code == 200
+    if first != second:  # one success ends every live code
+        r = await client.post("/supplier/auth/verify", headers=h,
+                              json={"phone": su["phone"], "code": second})
+        assert r.status_code == 401
+
+
+async def test_concurrent_requests_send_one_sms(client, owner):
+    import asyncio
+
+    _, su = await new_supplier(client, owner)
+    h = ip_headers()
+    results = await asyncio.gather(*[
+        client.post("/supplier/auth/request-code", json={"phone": su["phone"]}, headers=h)
+        for _ in range(5)])
+    assert sorted(r.status_code for r in results) == [200, 429, 429, 429, 429]
+    assert sms_count(su["phone"]) == 1
 
 
 # ---------------------------------------------------------------- limits
@@ -202,15 +216,23 @@ async def test_resend_wait(client, owner):
 
 async def test_hourly_limit_per_phone(client, owner):
     _, su = await new_supplier(client, owner)
+    here = ip_headers()
     with settings_override(otp_resend_seconds=0):
         for _ in range(5):
+            r = await client.post("/supplier/auth/request-code", json={"phone": su["phone"]},
+                                  headers=here)
+            assert r.status_code == 200
+        r = await client.post("/supplier/auth/request-code", json={"phone": su["phone"]},
+                              headers=here)
+        assert r.status_code == 429  # 5 per number from one address
+        for _ in range(5):  # others can still ask, up to 10 for the number in all
             r = await client.post("/supplier/auth/request-code", json={"phone": su["phone"]},
                                   headers=ip_headers())
             assert r.status_code == 200
         r = await client.post("/supplier/auth/request-code", json={"phone": su["phone"]},
                               headers=ip_headers())
         assert r.status_code == 429
-    assert sms_count(su["phone"]) == 5
+    assert sms_count(su["phone"]) == 10
 
 
 async def test_hourly_limit_per_ip_counts_unknown_numbers(client):

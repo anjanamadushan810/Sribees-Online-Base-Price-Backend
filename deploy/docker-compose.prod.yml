@@ -49,6 +49,8 @@ services:
     restart: unless-stopped
     env_file: .env
     command: ["sh", "-c", "python -m app.cli worker || sleep 300"]
+    healthcheck:
+      disable: true  # the image's check calls the API, which a worker does not serve
     depends_on:
       postgres:
         condition: service_healthy

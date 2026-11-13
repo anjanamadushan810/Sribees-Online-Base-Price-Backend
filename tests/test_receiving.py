@@ -1,8 +1,12 @@
 """Receiving against a supply order (phase B; replaces Finance's GRN): back-orders,
 landed cost, the journal Finance is asked to post, and who may receive."""
 
+import json
+import os
 import uuid
+from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -16,6 +20,8 @@ from tests.stock_helpers import (
     new_product,
     receive,
 )
+
+JOURNAL_CONTRACT = Path(__file__).parent / "fixtures" / "contract_journal_requested.json"
 
 
 async def _events(order_id: str, kind: str) -> list[dict]:
@@ -101,6 +107,25 @@ async def test_journal_request_is_balanced_and_names_the_online_branch(client, o
     assert [(ln["account_code"], ln["debit"], ln["credit"], ln["online_branch_id"])
             for ln in j["lines"]] == [("1300", "2450.00", "0.00", online),
                                       ("2020", "0.00", "2450.00", online)]
+    # asking again for the same document gives the first request back
+    from app.services import ledger
+
+    async with get_sessionmaker()() as s, s.begin():
+        again = await ledger.post_journal(
+            s, entry_date=date(2026, 10, 2), source="purchasing", source_ref=ref, memo="again",
+            lines=[ledger.LineIn("1300", branch, debit=Decimal("1")),
+                   ledger.LineIn("2020", branch, credit=Decimal("1"))], user_id=None)
+    assert str(again.journal_id) == j["event_id"]
+    # the contract Finance's tests read (refresh with SUPPLY_EVENTS_DUMP=1)
+    if os.environ.get("SUPPLY_EVENTS_DUMP"):
+        from app.models import OutboxEvent
+        from app.services.finance_link import envelope
+
+        async with get_sessionmaker()() as s:
+            row = await s.scalar(select(OutboxEvent).where(
+                OutboxEvent.event_id == uuid.UUID(j["event_id"])))
+        JOURNAL_CONTRACT.write_text(json.dumps(envelope(row), ensure_ascii=False, indent=2)
+                                    + "\n", encoding="utf-8")
 
 
 async def test_close_the_rest_and_no_cancel_after_goods_arrived(client, owner, branch):

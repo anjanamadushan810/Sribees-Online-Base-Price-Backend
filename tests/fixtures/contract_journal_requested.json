@@ -1,0 +1,33 @@
+{
+  "seq": 7,
+  "event_id": "8b2b34b7-9d47-46d7-8d31-79f8d5743025",
+  "type": "journal.requested",
+  "aggregate_id": null,
+  "occurred_at": "2026-11-13T11:45:20.781593+00:00",
+  "payload": {
+    "memo": "RCV-000003 goods received against SPO-000002",
+    "lines": [
+      {
+        "memo": "RCV-000003",
+        "debit": "2450.00",
+        "credit": "0.00",
+        "branch_code": "BR0B4D",
+        "account_code": "1300",
+        "online_branch_id": "ce9e6728-e4aa-4e79-8451-aba4f41a93d4"
+      },
+      {
+        "memo": "RCV-000003",
+        "debit": "0.00",
+        "credit": "2450.00",
+        "branch_code": "BR0B4D",
+        "account_code": "2020",
+        "online_branch_id": "ce9e6728-e4aa-4e79-8451-aba4f41a93d4"
+      }
+    ],
+    "total": "2450.00",
+    "source": "purchasing",
+    "user_id": "0d9f86e1-2e66-4b5a-86d3-78258f271dbd",
+    "entry_date": "2026-10-02",
+    "source_ref": "receipt:895e2062-577c-4e09-886d-5af6f7d06ef5"
+  }
+}

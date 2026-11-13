@@ -67,14 +67,14 @@ class BranchOut(ORM):
     branch_id: uuid.UUID
     code: str
     name: str
-    online_branch_id: int | None
+    online_branch_id: uuid.UUID | None
     is_active: bool
 
 
 class BranchIn(BaseModel):
     code: str = Field(min_length=1, max_length=20)
     name: str = Field(min_length=2, max_length=120)
-    online_branch_id: int | None = None
+    online_branch_id: uuid.UUID | None = None
 
 
 class UserOut(ORM):

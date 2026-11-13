@@ -38,6 +38,22 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      internal: {}
+      edge:
+        # Finance reads /internal/finance/events here (never through the web/Caddy).
+        aliases: [sribees-supply-dev-api]
+
+  # Reads Finance's answers (PO approved / rejected). Waits quietly while FINANCE_API_URL
+  # is not set: `python -m app.cli finance-feed` exits, and restart brings it back later.
+  worker:
+    image: ${SUPPLY_IMAGE:?set SUPPLY_IMAGE}
+    restart: unless-stopped
+    env_file: .env
+    command: ["sh", "-c", "python -m app.cli finance-feed || sleep 300"]
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks: [internal, edge]
 
   web:

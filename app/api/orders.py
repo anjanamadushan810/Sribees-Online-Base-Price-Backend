@@ -68,6 +68,10 @@ class StaffOrderOut(OrderBase):
     created_at: datetime
     submitted_at: datetime | None
     supplier_seen_at: datetime | None
+    finance_po_no: str | None
+    approved_by_name: str | None
+    reject_reason: str | None
+    rejected_at: datetime | None
     lines: list[StaffLineOut]
 
 
@@ -153,7 +157,8 @@ async def _staff_out(db, order: SupplyOrder) -> StaffOrderOut:
         **{k: getattr(order, k) for k in (
             "order_id", "order_no", "status", "supplier_note", "approved_at", "answered_at",
             "cancel_reason", "cancel_note", "supplier_id", "branch_id", "note", "created_at",
-            "submitted_at", "supplier_seen_at")},
+            "submitted_at", "supplier_seen_at", "finance_po_no", "approved_by_name",
+            "reject_reason", "rejected_at")},
         **orders.order_totals(order), supplier_name=supplier_name, branch_name=branch_name,
         lines=[StaffLineOut.model_validate(ln) for ln in order.lines])
 

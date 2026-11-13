@@ -109,7 +109,9 @@ async def test_order_flow_and_base_price(client, owner, purchasing, shop):
 
     bp = (await client.get(f"/base-prices/{CHERAMY_75}", headers=purchasing.headers)).json()
     assert [h["unit_price"] for h in bp["history"] if h["order_id"] == oid] == ["125.00"]
-    assert [o["price"] for o in bp["offers"]] == ["128.00"]  # what we could pay today
+    # what we could pay this supplier today (other tests' suppliers offer it too)
+    assert [o["price"] for o in bp["offers"]
+            if o["supplier_id"] == shop["supplier_id"]] == ["128.00"]
     current = (await client.get("/base-prices", headers=purchasing.headers)).json()
     row = next(c for c in current if c["online_product_id"] == str(CHERAMY_75))
     assert row["order_id"] == oid and row["unit_price"] == "125.00"

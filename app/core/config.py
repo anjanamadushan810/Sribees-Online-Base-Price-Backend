@@ -35,6 +35,17 @@ class Settings(BaseSettings):
     # Who approves a submitted supplier order: "local" = the owner in Supply (until Finance
     # is live, QUESTIONS.md #9); "finance" = Finance's PO approval answers through the outbox.
     order_approval: str = Field(default="local", pattern="^(local|finance)$")
+    # ---- Finance link (docs/plans/joint-go-live.md, phase A) ----
+    # SHA-256 (hex) of the token Finance presents on /internal/finance/*; empty = 404.
+    finance_service_token_sha256: str = ""
+    # Comma-separated IPs/CIDRs allowed to call /internal/finance/* (empty = any peer).
+    finance_allowed_ips: str = ""
+    # Where Supply reads Finance's answers (internal address) and the token it presents.
+    finance_api_url: str = ""
+    finance_feed_token: str = ""
+    finance_feed_poll_seconds: int = 15
+    finance_feed_gap_grace_seconds: int = 120
+
     # A supplier's delivery charge on accepting may be at most this % of the goods total
     # (the owner approved the goods, not an open-ended charge).
     delivery_charge_max_pct: int = 25

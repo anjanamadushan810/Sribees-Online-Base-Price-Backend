@@ -1,0 +1,53 @@
+{
+  "seq": 1,
+  "event_id": "91cc703c-a531-41ee-bff4-cabef51d5aeb",
+  "type": "order.submitted",
+  "aggregate_id": "30e1b6fc-973b-4345-bcb0-5541c2e8570c",
+  "occurred_at": "2026-11-13T07:12:15.920944+00:00",
+  "payload": {
+    "lines": [
+      {
+        "boxes": 2,
+        "units": 300,
+        "line_id": "fe13f8fa-9a5b-409f-a468-6800d13debc6",
+        "line_total": "37500.00",
+        "unit_price": "125.00",
+        "description": "බේබි ශෙරමි සබන් 75g",
+        "units_per_box": 150,
+        "online_product_id": "7761cde7-7e51-401e-9957-e00a47da3819",
+        "online_variant_id": null,
+        "finance_product_id": "c3dee0ea-417c-514f-aae4-1afbb50f0884"
+      },
+      {
+        "boxes": 1,
+        "units": 147,
+        "line_id": "2d938613-393f-44f6-8772-18da3cf2f18f",
+        "line_total": "19110.00",
+        "unit_price": "130.00",
+        "description": "ලයිෆ්බෝයි සබන් 95g",
+        "units_per_box": 147,
+        "online_product_id": null,
+        "online_variant_id": null,
+        "finance_product_id": null
+      }
+    ],
+    "branch": {
+      "code": "B5854CA",
+      "name": "Matugama-test",
+      "online_branch_id": "212ecdc5-4da9-4940-b6cf-8669f7edf7c9"
+    },
+    "status": "submitted",
+    "order_id": "30e1b6fc-973b-4345-bcb0-5541c2e8570c",
+    "order_no": "SPO-000002",
+    "supplier": {
+      "name": "Supplier 8b627a",
+      "phone": "+94751472939",
+      "supplier_id": "b1fe1b39-696b-4d19-bdbd-236eb42a0b89"
+    },
+    "branch_id": "89a1e64a-f137-40ae-9d5e-cb35115150ca",
+    "order_date": "2026-11-13",
+    "goods_total": "56610.00",
+    "supplier_id": "b1fe1b39-696b-4d19-bdbd-236eb42a0b89",
+    "submitted_by_role": "owner"
+  }
+}

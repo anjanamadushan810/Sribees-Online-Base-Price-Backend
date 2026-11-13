@@ -17,6 +17,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +28,7 @@ from app.models import (
     BasePrice,
     Branch,
     OfferMatch,
+    OnlineVariant,
     OutboxEvent,
     Supplier,
     SupplierOffer,
@@ -38,6 +40,9 @@ from app.services import audit
 from app.services.errors import Conflict, Forbidden, NotFound, SupplyError
 
 SUPPLIER_VISIBLE = ("approved", "accepted", "declined", "cancelled", "received")
+
+
+COLOMBO = ZoneInfo("Asia/Colombo")
 
 
 def _now() -> datetime:
@@ -225,14 +230,46 @@ async def submit(db: AsyncSession, actor: StaffActor, order_id: uuid.UUID) -> Su
     if not order.lines:
         raise SupplyError("add at least one line first")
     await _refuse_stale(db, order)
+    finance = get_settings().order_approval == "finance"
+    branch = await db.get(Branch, order.branch_id)
+    if finance and branch.online_branch_id is None:
+        raise Conflict(f"branch {branch.name} has no SRIBEESonline branch id yet, so Finance "
+                       "cannot take its orders; set it on the Branches page first")
+    supplier = await db.get(Supplier, order.supplier_id)
     order.status, order.submitted_by, order.submitted_at = "submitted", actor.user_id, _now()
     totals = order_totals(order)
+    phones = [u.phone for u in supplier.users if u.is_active]
+    # Finance keys a product by Online's variant id: a line matched to a product (not to a
+    # pack size) names its only variant; a product with several needs the pack size.
+    finance_item: dict[uuid.UUID, uuid.UUID | None] = {}
+    for ln in order.lines:
+        if ln.online_variant_id is not None:
+            finance_item[ln.line_id] = ln.online_variant_id
+        elif ln.online_product_id is not None:
+            ids = list(await db.scalars(select(OnlineVariant.online_variant_id).where(
+                OnlineVariant.online_product_id == ln.online_product_id)))
+            finance_item[ln.line_id] = ids[0] if len(ids) == 1 else None
+        else:
+            finance_item[ln.line_id] = None
     _emit(db, "order.submitted", order, goods_total=str(totals["goods_total"]),
-          lines=[{"online_product_id": str(ln.online_product_id)
+          order_date=order.submitted_at.astimezone(COLOMBO).date().isoformat(),
+          submitted_by_role=actor.role,
+          supplier={"supplier_id": str(supplier.supplier_id), "name": supplier.name,
+                    "phone": phones[0] if phones else None},
+          branch={"online_branch_id": str(branch.online_branch_id)
+                  if branch.online_branch_id else None,
+                  "code": branch.code, "name": branch.name},
+          lines=[{"line_id": str(ln.line_id),
+                  "description": f"{ln.heading} {ln.label or ''}".strip(),
+                  "online_product_id": str(ln.online_product_id)
                   if ln.online_product_id else None,
                   "online_variant_id": str(ln.online_variant_id)
                   if ln.online_variant_id else None,
-                  "units": ln.boxes * ln.units_per_box, "unit_price": str(ln.unit_price)}
+                  "finance_product_id": str(finance_item[ln.line_id])
+                  if finance_item[ln.line_id] else None,
+                  "boxes": ln.boxes, "units_per_box": ln.units_per_box,
+                  "units": ln.boxes * ln.units_per_box, "unit_price": str(ln.unit_price),
+                  "line_total": str(ln.boxes * ln.units_per_box * ln.unit_price)}
                  for ln in order.lines])
     await audit.record(db, user_id=actor.user_id, action="order.submit", entity="order",
                        entity_id=order.order_id, after={"goods_total": str(totals["goods_total"])})

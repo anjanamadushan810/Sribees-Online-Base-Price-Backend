@@ -38,7 +38,7 @@ class Branch(Base):
     branch_id: Mapped[uuid.UUID] = _uuid_pk()
     code: Mapped[str] = mapped_column(String(20))
     name: Mapped[str] = mapped_column(String(120))
-    online_branch_id: Mapped[int | None] = mapped_column(Integer)
+    online_branch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = _created()
 
@@ -328,6 +328,11 @@ class SupplyOrder(Base):
     answered_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancelled_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    # 0006: Finance's answer (ORDER_APPROVAL=finance)
+    finance_po_no: Mapped[str | None] = mapped_column(String(20))
+    reject_reason: Mapped[str | None] = mapped_column(Text)
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_by_name: Mapped[str | None] = mapped_column(String(150))
 
     lines: Mapped[list["SupplyOrderLine"]] = relationship(
         lazy="selectin", order_by="SupplyOrderLine.heading", cascade="all, delete-orphan")
@@ -376,3 +381,27 @@ class OutboxEvent(Base):
     event: Mapped[str] = mapped_column(String(40))
     payload: Mapped[dict] = mapped_column(JSONB)
     created_at: Mapped[datetime] = _created()
+    event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), server_default=FetchedValue())
+
+
+class FeedState(Base):
+    __tablename__ = "feed_state"
+
+    feed: Mapped[str] = mapped_column(String(20), primary_key=True)
+    last_seq: Mapped[int] = mapped_column(BigInteger, default=0)
+    gaps: Mapped[dict] = mapped_column(JSONB, default=dict)
+    last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = _created()
+
+
+class ProcessedEvent(Base):
+    __tablename__ = "processed_events"
+
+    event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    feed: Mapped[str] = mapped_column(String(20))
+    seq: Mapped[int] = mapped_column(BigInteger)
+    event_type: Mapped[str] = mapped_column(String(40))
+    outcome: Mapped[str] = mapped_column(String(12))
+    processed_at: Mapped[datetime] = _created()

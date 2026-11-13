@@ -36,7 +36,7 @@ if [ "$status" != healthy ]; then
 fi
 
 mkdir -p backups && chmod 700 backups
-"${COMPOSE[@]}" up -d web backup
+"${COMPOSE[@]}" up -d web backup worker
 # web holds the api address from its own start; a restart picks up a new api.
 "${COMPOSE[@]}" restart web >/dev/null
 "${COMPOSE[@]}" ps

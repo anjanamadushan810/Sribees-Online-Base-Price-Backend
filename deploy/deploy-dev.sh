@@ -35,7 +35,7 @@ if [ "$status" != healthy ]; then
   exit 1
 fi
 
-"${COMPOSE[@]}" up -d web
+"${COMPOSE[@]}" up -d web worker
 # web holds the api address from its own start; a restart picks up a new api.
 "${COMPOSE[@]}" restart web >/dev/null
 "${COMPOSE[@]}" ps

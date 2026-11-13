@@ -202,3 +202,31 @@ async def test_a_supplier_with_the_app_must_accept_first(client, owner, branch):
     oid, (line,) = await approved_order(owner, supplier, branch, [(milk, 2, "300.00")])
     r = await receive(client, owner, oid, [{"order_line_id": line, "units": 2}])
     assert r.status_code == 409 and "not accepted" in r.json()["detail"]
+
+
+async def test_no_stock_moves_in_a_month_finance_closed(client, owner, branch):
+    from app.core.db import get_sessionmaker
+    from app.services import finance_link
+
+    period = str(uuid.uuid4())
+
+    async def tell(status):
+        async with get_sessionmaker()() as s, s.begin():
+            return await finance_link.apply(s, {
+                "type": f"period.{'closed' if status == 'closed' else 'reopened'}",
+                "aggregate_id": period,
+                "payload": {"start_date": "2026-08-01", "end_date": "2026-08-31",
+                            "status": status}})
+
+    supplier = await fresh_supplier(client, owner)
+    sugar = await new_product(client, owner, name="Sugar pack")
+    oid, (line,) = await approved_order(owner, supplier, branch, [(sugar, 4, "210.00")],
+                                        day="2026-08-20")
+    assert await tell("closed") == "applied"
+    r = await receive(client, owner, oid, [{"order_line_id": line, "units": 4}],
+                      day="2026-08-25")
+    assert r.status_code == 409 and "closed the month" in r.json()["detail"]
+    assert await tell("open") == "applied"  # the owner reopened it
+    r = await receive(client, owner, oid, [{"order_line_id": line, "units": 4}],
+                      day="2026-08-25")
+    assert r.status_code == 201, r.text

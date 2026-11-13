@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Branch, OutboxEvent
+from app.services import books
 from app.services.errors import SupplyError
 
 CENT = Decimal("0.01")
@@ -75,6 +76,7 @@ async def post_journal(
         if existing is not None:
             return RequestedJournal(existing.event_id, source, source_ref)
 
+    await books.open_period(db, entry_date)
     if not memo or not memo.strip():
         raise SupplyError("a journal needs a description")
     if len(lines) < 2:

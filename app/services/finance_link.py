@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
 from app.models import FeedState, OutboxEvent, ProcessedEvent, SupplyOrder
-from app.services import audit, orders
+from app.services import audit, books, orders
 from app.services.orders import order_totals
 
 log = logging.getLogger("supply.finance_feed")
@@ -69,6 +69,9 @@ async def _order(db: AsyncSession, p: dict) -> SupplyOrder | None:
 async def apply(db: AsyncSession, ev: dict) -> str:
     """Apply one Finance event. Returns the outcome stored with it."""
     kind, p = ev["type"], ev.get("payload") or {}
+    if kind in ("period.closed", "period.reopened"):
+        # Whatever the approval mode: stock must not move in a closed month (phase B).
+        return await books.apply_period_event(db, p, ev.get("aggregate_id"))
     if kind not in ("po.created", "po.approved", "po.rejected", "po.refused"):
         return "ignored"
     if get_settings().order_approval != "finance":

@@ -738,3 +738,15 @@ class ReceiptLine(Base):
     mrp: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     batch_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("stock_batches.batch_id"))
+
+
+class FinancePeriod(Base):
+    """0009: a Finance month and whether it is closed (from Finance's events)."""
+
+    __tablename__ = "finance_periods"
+
+    period_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    start_date: Mapped[date] = mapped_column(Date)
+    end_date: Mapped[date] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(10))
+    updated_at: Mapped[datetime] = _created()

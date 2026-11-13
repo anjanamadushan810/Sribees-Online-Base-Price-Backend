@@ -30,7 +30,7 @@ from app.models import (
     SupplyOrder,
     SupplyOrderLine,
 )
-from app.services import audit, ledger, settings, stock
+from app.services import audit, books, ledger, settings, stock
 from app.services.actors import Actor, _now
 from app.services.errors import Conflict, Forbidden, NotFound, SupplyError
 
@@ -137,6 +137,7 @@ async def receive(
         raise SupplyError("goods cannot arrive before they were ordered")
     if received_date > date.today() + timedelta(days=1):
         raise SupplyError("the receipt date is in the future")
+    await books.open_period(db, received_date)
     if not lines:
         raise SupplyError("nothing received")
     if len({ln.order_line_id for ln in lines}) != len(lines):

@@ -286,3 +286,15 @@ async def test_refused_mismatch_and_local_mode(client, owner, purchasing, shop):
     assert counts == {"ignored": 1}
     o = (await client.get(f"/orders/{local}", headers=purchasing.headers)).json()
     assert o["status"] == "submitted"
+
+
+async def test_branch_with_online_id_through_the_api(client, owner):
+    online = str(uuid.uuid4())
+    r = await client.post("/branches", headers=owner.headers,
+                          json={"code": f"T{uuid.uuid4().hex[:5].upper()}", "name": "Matugama",
+                                "online_branch_id": online})
+    assert r.status_code == 201, r.text
+    assert r.json()["online_branch_id"] == online
+    r = await client.post("/branches", headers=owner.headers,
+                          json={"code": "BAD1", "name": "x", "online_branch_id": "12"})
+    assert r.status_code == 422

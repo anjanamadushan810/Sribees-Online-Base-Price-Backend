@@ -44,7 +44,7 @@ async def create_branch(body: BranchIn, p: Principal = Depends(require("branches
     db.add(branch)
     await db.flush()
     await audit.record(db, user_id=p.user_id, action="branch.create", entity="branch",
-                       entity_id=branch.branch_id, after=body.model_dump())
+                       entity_id=branch.branch_id, after=body.model_dump(mode="json"))
     return branch
 
 

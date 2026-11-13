@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     finance_feed_poll_seconds: int = 15
     finance_feed_gap_grace_seconds: int = 120
 
+    # ---- supplier app alerts (FCM HTTP v1). The Google service-account JSON (the same
+    # account Online sends with); empty = no alerts (the Orders tab still shows orders).
+    fcm_credentials_json: str = ""
+    push_poll_seconds: int = 10
+    push_gap_grace_seconds: int = 120
+
     # A supplier's delivery charge on accepting may be at most this % of the goods total
     # (the owner approved the goods, not an open-ended charge).
     delivery_charge_max_pct: int = 25

@@ -17,13 +17,13 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import security
 from app.core.config import get_settings
 from app.core.phone import InvalidPhone, normalise_mobile
-from app.models import Supplier, SupplierOtp, SupplierSession, SupplierUser
+from app.models import Supplier, SupplierDevice, SupplierOtp, SupplierSession, SupplierUser
 from app.services import audit, sms
 from app.services.errors import SupplyError
 
@@ -222,6 +222,8 @@ async def revoke_session(db: AsyncSession, session_id: uuid.UUID) -> None:
         .where(SupplierSession.session_id == session_id, SupplierSession.revoked_at.is_(None))
         .values(revoked_at=_now())
     )
+    # Signed out: this phone gets no more order alerts.
+    await db.execute(delete(SupplierDevice).where(SupplierDevice.session_id == session_id))
 
 
 async def revoke_all_for_user(db: AsyncSession, supplier_user_id: uuid.UUID) -> None:
@@ -232,3 +234,5 @@ async def revoke_all_for_user(db: AsyncSession, supplier_user_id: uuid.UUID) -> 
                SupplierSession.revoked_at.is_(None))
         .values(revoked_at=_now())
     )
+    await db.execute(delete(SupplierDevice).where(
+        SupplierDevice.supplier_user_id == supplier_user_id))

@@ -405,3 +405,18 @@ class ProcessedEvent(Base):
     event_type: Mapped[str] = mapped_column(String(40))
     outcome: Mapped[str] = mapped_column(String(12))
     processed_at: Mapped[datetime] = _created()
+
+
+class SupplierDevice(Base):
+    """0007: a phone's FCM token, tied to the supplier session that registered it."""
+
+    __tablename__ = "supplier_devices"
+
+    token: Mapped[str] = mapped_column(String(400), primary_key=True)
+    supplier_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("supplier_users.supplier_user_id"))
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("supplier_sessions.session_id"))
+    platform: Mapped[str] = mapped_column(String(20), default="android")
+    created_at: Mapped[datetime] = _created()
+    last_seen_at: Mapped[datetime] = _created()

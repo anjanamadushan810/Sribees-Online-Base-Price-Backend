@@ -2,8 +2,8 @@
 
     python -m app.cli create-owner --email you@example.com --name "Full Name"
     ... create-owner ... --password-stdin   (scripted: password as one line on stdin)
-    python -m app.cli finance-feed          # read Finance's PO answers, forever
-    python -m app.cli finance-feed --once   # one round, then exit
+    python -m app.cli worker          # Finance's PO answers + supplier alerts, forever
+    python -m app.cli worker --once   # one round, then exit
 
 The owner's password is read from the terminal, never from the command line.
 """
@@ -42,37 +42,47 @@ async def create_owner(email: str, name: str, password_stdin: bool = False) -> N
     print("owner created; two-factor set-up starts at first sign-in")
 
 
-async def finance_feed(once: bool) -> None:
-    """Read Finance's answers (PO approved / rejected). A second copy waits on the lock."""
+async def worker(once: bool) -> None:
+    """Background rounds: Finance's answers (when FINANCE_API_URL is set) and supplier
+    app alerts (when FCM_CREDENTIALS_JSON is set). A second copy waits on the lock."""
     import logging
 
     import httpx
 
     from app.core.config import get_settings
-    from app.services import finance_link
+    from app.services import finance_link, push
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-    log = logging.getLogger("supply.finance_feed")
+    log = logging.getLogger("supply.worker")
     settings = get_settings()
-    if not settings.finance_api_url or not settings.finance_feed_token:
-        sys.exit("FINANCE_API_URL and FINANCE_FEED_TOKEN are not set")
+    finance_on = bool(settings.finance_api_url and settings.finance_feed_token)
+    if not finance_on and not push.enabled():
+        sys.exit("nothing to do: set FINANCE_API_URL/FINANCE_FEED_TOKEN or FCM_CREDENTIALS_JSON")
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as lock_db:
         while not await finance_link.try_lock(lock_db):
             if once:
-                sys.exit("another finance feed is running")
+                sys.exit("another worker is running")
             await asyncio.sleep(30)
         async with httpx.AsyncClient() as client:
             while True:
+                if finance_on:
+                    try:
+                        counts = await finance_link.run_once(sessionmaker, client)
+                        if counts:
+                            log.info("finance round: %s", counts)
+                    except Exception:  # noqa: BLE001 -- logged, retried next round
+                        log.exception("finance feed round failed")
                 try:
-                    counts = await finance_link.run_once(sessionmaker, client)
+                    counts = await push.run_once(sessionmaker, client)
                     if counts:
-                        log.info("round: %s", counts)
-                except Exception:
-                    log.exception("finance feed round failed")
+                        log.info("push round: %s", counts)
+                except Exception:  # noqa: BLE001 -- logged, retried next round
+                    log.exception("push round failed")
                 if once:
                     return
-                await asyncio.sleep(settings.finance_feed_poll_seconds)
+                await asyncio.sleep(min(settings.finance_feed_poll_seconds,
+                                        settings.push_poll_seconds))
 
 
 def main() -> None:
@@ -82,13 +92,14 @@ def main() -> None:
     owner.add_argument("--email", required=True)
     owner.add_argument("--name", required=True)
     owner.add_argument("--password-stdin", action="store_true")
-    ff = sub.add_parser("finance-feed")
-    ff.add_argument("--once", action="store_true")
+    for name in ("worker", "finance-feed"):  # finance-feed: the first name, kept
+        w = sub.add_parser(name)
+        w.add_argument("--once", action="store_true")
     args = parser.parse_args()
     if args.command == "create-owner":
         asyncio.run(create_owner(args.email, args.name, args.password_stdin))
-    elif args.command == "finance-feed":
-        asyncio.run(finance_feed(args.once))
+    elif args.command in ("worker", "finance-feed"):
+        asyncio.run(worker(args.once))
 
 
 if __name__ == "__main__":

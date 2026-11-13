@@ -2,6 +2,9 @@
 filter can tell supplier traffic from staff traffic at a glance."""
 
 from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel, Field
+from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import SupplierPrincipal, client_ip, current_supplier
@@ -15,7 +18,7 @@ from app.api.schemas import (
 )
 from app.core.config import get_settings
 from app.core.db import get_db
-from app.models import Supplier
+from app.models import Supplier, SupplierDevice
 from app.services import supplier_auth
 from app.services.errors import SupplyError
 
@@ -59,6 +62,24 @@ async def refresh(body: RefreshIn, db: AsyncSession = Depends(get_db)):
 async def logout(p: SupplierPrincipal = Depends(current_supplier),
                  db: AsyncSession = Depends(get_db)):
     await supplier_auth.revoke_session(db, p.session_id)
+
+
+class DeviceIn(BaseModel):
+    token: str = Field(min_length=20, max_length=400)
+    platform: str = Field(default="android", max_length=20)
+
+
+@router.post("/devices", status_code=204)
+async def register_device(body: DeviceIn, p: SupplierPrincipal = Depends(current_supplier),
+                          db: AsyncSession = Depends(get_db)):
+    """This phone gets the supplier's order alerts while this session lasts."""
+    stmt = insert(SupplierDevice).values(
+        token=body.token, supplier_user_id=p.user.supplier_user_id, session_id=p.session_id,
+        platform=body.platform)
+    await db.execute(stmt.on_conflict_do_update(
+        index_elements=[SupplierDevice.token],
+        set_={"supplier_user_id": p.user.supplier_user_id, "session_id": p.session_id,
+              "platform": body.platform, "last_seen_at": func.now()}))
 
 
 @router.get("/me", response_model=SupplierMeOut)

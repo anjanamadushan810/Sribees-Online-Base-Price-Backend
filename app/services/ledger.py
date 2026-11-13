@@ -13,7 +13,7 @@ without one cannot keep stock (its journals would have nowhere to go).
 
 import uuid
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -25,6 +25,7 @@ from app.services.errors import SupplyError
 
 CENT = Decimal("0.01")
 EVENT = "journal.requested"
+BACKDATE_DAYS = 90
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,11 @@ async def post_journal(
         if existing is not None:
             return RequestedJournal(existing.event_id, source, source_ref)
 
+    # Dated stock work stays near today, so a typo never lands in a year Finance has
+    # no period for (review 2026-11-13 #1); Finance still checks the period itself.
+    today = date.today()
+    if not (today - timedelta(days=BACKDATE_DAYS) <= entry_date <= today + timedelta(days=1)):
+        raise SupplyError(f"date {entry_date} is outside the last {BACKDATE_DAYS} days")
     await books.open_period(db, entry_date)
     if not memo or not memo.strip():
         raise SupplyError("a journal needs a description")

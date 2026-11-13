@@ -67,9 +67,11 @@ async def stock_item_for(db: AsyncSession, line: SupplyOrderLine) -> uuid.UUID |
     return ids[0] if len(ids) == 1 else None
 
 
-async def ensure_product(db: AsyncSession, product_id: uuid.UUID) -> Product:
+async def ensure_product(db: AsyncSession, product_id: uuid.UUID, *,
+                         by_weight: bool = False) -> Product:
     """The stock product for an Online variant, created on first receipt from the
-    catalogue mirror. A product kept by weight is set up on the Products page first."""
+    catalogue mirror: kept by weight (kg, loose) when its first receipt gives kilograms,
+    else counted in pieces (review 2026-11-13 #4: never guess pieces for weighed goods)."""
     product = await db.get(Product, product_id)
     if product is not None:
         return product
@@ -82,9 +84,11 @@ async def ensure_product(db: AsyncSession, product_id: uuid.UUID) -> Product:
     if variant.name and parent and variant.name.lower() not in parent.name.lower():
         name = f"{parent.name} {variant.name}"
     product = Product(product_id=product_id, sku=variant.sku or (parent.sku if parent else None),
-                      name=name[:255], unit="each", stock_mode="unit", kind="sellable",
-                      weight_kg=(Decimal(variant.weight_grams) / 1000
-                                 if variant.weight_grams else None))
+                      name=name[:255], unit="kg" if by_weight else "each",
+                      stock_mode="loose" if by_weight else "unit", kind="sellable",
+                      weight_kg=Decimal("1") if by_weight else (
+                          Decimal(variant.weight_grams) / 1000 if variant.weight_grams
+                          else None))
     db.add(product)
     await db.flush()
     return product
@@ -171,12 +175,19 @@ async def receive(
         if ln.units > left:
             raise SupplyError(f"{name}: received {ln.units} but only {left} of {ol.units} "
                               "are still due")
-        item = ln.product_id or await stock_item_for(db, ol)
+        item = await stock_item_for(db, ol)
+        if ln.product_id is not None and ln.product_id != item:
+            # Only another pack size of the same Online product (review #3).
+            variant = await db.get(OnlineVariant, ln.product_id)
+            if (variant is None or not variant.is_active
+                    or variant.online_product_id != ol.online_product_id):
+                raise SupplyError(f"{name}: that is not a pack size of this product")
+            item = ln.product_id
         if item is None:
             raise SupplyError(f"{name}: choose which pack size this is")
-        product = await ensure_product(db, item)
-        if product.kind != "sellable" and product.kind != "bulk":
-            raise SupplyError(f"{product.name} is a packing material, not goods for sale")
+        product = await ensure_product(db, item, by_weight=ln.weight_kg is not None)
+        if product.kind != "sellable" or not product.is_active:
+            raise SupplyError(f"{product.name} is not an active item for sale")
         if product.unit == "kg":
             if ln.weight_kg is None or ln.weight_kg <= 0:
                 raise SupplyError(f"{product.name} is kept by weight: enter the kilograms")
@@ -227,7 +238,8 @@ async def receive(
     if left == 0:
         order.status = "received"
     ordered = sum(ln.units for ln in order.lines)
-    _emit_receipt(db, order, receipt, received, journal, ordered=ordered, outstanding=left)
+    _emit_receipt(db, order, receipt, received, journal, ordered=ordered, outstanding=left,
+                  online_branch_id=branch.online_branch_id)
     await db.flush()
     await audit.record(db, user_id=actor.user_id, action="receipt.post", entity="receipt",
                        entity_id=receipt.receipt_id,
@@ -238,13 +250,16 @@ async def receive(
     return receipt
 
 
-def _emit_receipt(db, order, receipt, received, journal, *, ordered: int, outstanding: int):
-    branch_payload = {"branch_id": str(order.branch_id)}
+def _emit_receipt(db, order, receipt, received, journal, *, ordered: int, outstanding: int,
+                  online_branch_id):
+    # Finance keys branches by SRIBEESonline's id (review #5)
+    branch = {"branch_id": str(order.branch_id),
+              "online_branch_id": str(online_branch_id) if online_branch_id else None}
     db.add(OutboxEvent(event="receipt.posted", payload={
         "receipt_id": str(receipt.receipt_id), "receipt_no": receipt.receipt_no,
         "order_id": str(order.order_id), "order_no": order.order_no,
         "finance_po_no": order.finance_po_no, "supplier_id": str(order.supplier_id),
-        **branch_payload, "received_date": receipt.received_date.isoformat(),
+        **branch, "received_date": receipt.received_date.isoformat(),
         "invoice_no": receipt.invoice_no,
         "invoice_total": str(receipt.invoice_total) if receipt.invoice_total is not None
         else None,

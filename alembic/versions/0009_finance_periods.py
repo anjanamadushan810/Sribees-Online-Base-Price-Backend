@@ -26,9 +26,13 @@ def upgrade() -> None:
             CHECK (end_date >= start_date)
         );
         CREATE INDEX ix_finance_periods_dates ON finance_periods (start_date, end_date);
+        -- the journal shim's "asked already?" lookup (review 2026-11-13 #7)
+        CREATE INDEX ix_supply_outbox_journal_ref ON supply_outbox
+            ((payload->>'source'), (payload->>'source_ref'))
+            WHERE event = 'journal.requested';
         """
     )
 
 
 def downgrade() -> None:
-    op.execute("DROP TABLE finance_periods")
+    op.execute("DROP INDEX ix_supply_outbox_journal_ref; DROP TABLE finance_periods")

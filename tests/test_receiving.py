@@ -230,3 +230,43 @@ async def test_no_stock_moves_in_a_month_finance_closed(client, owner, branch):
     r = await receive(client, owner, oid, [{"order_line_id": line, "units": 4}],
                       day="2026-08-25")
     assert r.status_code == 201, r.text
+
+
+async def test_review_fixes_product_weight_and_dates(client, owner, branch):
+    """Review 2026-11-13: #3 a line is received only as a pack size of its own product;
+    #4 a first receipt by kilograms makes a weighed item; #1 no far-off dates."""
+    from app.core.db import get_sessionmaker
+    from app.models import OnlineProduct, OnlineVariant
+
+    supplier = await fresh_supplier(client, owner)
+    jam = await new_product(client, owner, name="Jam")
+    other = await new_product(client, owner, name="Unrelated")
+    oid, (line, other_line) = await approved_order(
+        owner, supplier, branch, [(jam, 5, "100.00"), (other, 1, "10.00")])
+    r = await receive(client, owner, oid, [{"order_line_id": line, "units": 5,
+                                            "product_id": other["product_id"]}])
+    assert r.status_code == 422 and "not a pack size" in r.json()["detail"]
+
+    # an Online item never received before, whose first receipt gives kilograms
+    async with get_sessionmaker()() as s, s.begin():
+        op = OnlineProduct(online_product_id=uuid.uuid4(), name="Red rice loose")
+        s.add(op)
+        await s.flush()
+        vid = uuid.uuid4()
+        s.add(OnlineVariant(online_variant_id=vid, online_product_id=op.online_product_id,
+                            name=""))
+    rice = {"product_id": str(vid), "name": "Red rice loose"}
+    oid2, (rice_line,) = await approved_order(owner, await fresh_supplier(client, owner),
+                                              branch, [(rice, 1, "9000.00")])
+    r = await receive(client, owner, oid2, [{"order_line_id": rice_line, "units": 1,
+                                             "weight_kg": "50"}])
+    assert r.status_code == 201, r.text
+    p = (await client.get("/products", headers=owner.headers,
+                          params={"search": "Red rice loose"})).json()
+    assert [(x["unit"], x["stock_mode"]) for x in p] == [("kg", "loose")]
+
+    old_id, (old_line,) = await approved_order(owner, await fresh_supplier(client, owner),
+                                               branch, [(jam, 2, "100.00")], day="2025-01-01")
+    r = await receive(client, owner, old_id, [{"order_line_id": old_line, "units": 2}],
+                      day="2025-01-02")
+    assert r.status_code == 422 and "outside the last" in r.json()["detail"]

@@ -80,13 +80,13 @@ async def _cursor_reset() -> int:
     return 0
 
 
-async def _run(events, now=None):
+async def _run(events, now=None, mode="finance"):
     from app.core.db import get_sessionmaker
     from app.services import finance_link
 
     client, seen = _feed(events)
     async with client:
-        with settings_override(finance_api_url="http://finance.test",
+        with settings_override(finance_api_url="http://finance.test", order_approval=mode,
                                finance_feed_token="finance-feed-token"):
             counts = await finance_link.run_once(get_sessionmaker(), client, now=now)
     return counts, seen
@@ -157,7 +157,7 @@ async def test_finance_sees_the_order(client, owner, purchasing, shop):  # noqa:
     uuid.UUID(ev["event_id"])
     p = ev["payload"]
     assert p["branch"]["online_branch_id"] == online_branch
-    assert p["submitted_by_role"] == "owner"
+    assert p["submitted_by_role"] == "owner" and p["approval_mode"] == "finance"
     assert p["supplier"]["supplier_id"] == shop["supplier_id"]
     soap = next(ln for ln in p["lines"] if ln["online_product_id"])
     assert (soap["units"], soap["unit_price"], soap["line_total"]) == (300, "125.00", "37500.00")
@@ -192,9 +192,11 @@ async def test_finance_answers(client, owner, purchasing, shop):  # noqa: F811
                (await client.get("/supplier/orders", headers=shop["sh"])).json())
 
     await _cursor_reset()
+    ok_total = (await client.get(f"/orders/{ok}", headers=purchasing.headers)).json()["goods_total"]
     events = [
         _ev(1, "po.created", ok, po_no="PO-000101", status="pending_approval"),
-        _ev(2, "po.approved", ok, po_no="PO-000101", approved_by_name="Owner Name"),
+        _ev(2, "po.approved", ok, po_no="PO-000101", approved_by_name="Owner Name",
+            total=ok_total),
         _ev(3, "po.rejected", no, po_no="PO-000102", reason="too much stock already",
             rejected_by_name="Owner Name"),
         _ev(4, "po.approved", gone, po_no="PO-000103"),
@@ -233,7 +235,7 @@ async def test_gap_waits_then_moves_on(client, owner, purchasing, shop):  # noqa
         oid = await _submitted_order(client, purchasing, shop)
     await _cursor_reset()
     events = [_ev(1, "po.created", oid, po_no="PO-000201"),
-              _ev(3, "po.approved", oid, po_no="PO-000201", approved_by_name="X")]
+              _ev(3, "po.approved", oid, po_no="PO-000201", approved_by_name="X")]  # no total
     now = datetime.now(UTC)
     counts, _ = await _run(events, now=now)
     assert counts == {"applied": 1, "waiting_on_gap": 1}
@@ -260,3 +262,27 @@ async def test_local_mode_unchanged(client, owner, purchasing, shop, approval): 
         await client.post(f"/orders/{o['order_id']}/submit", headers=purchasing.headers)
         r = await client.post(f"/orders/{o['order_id']}/approve", headers=owner.headers)
         assert r.status_code == 200 and r.json()["status"] == "approved"
+
+
+async def test_refused_mismatch_and_local_mode(client, owner, purchasing, shop):  # noqa: F811
+    await _set_online_branch(shop["branch"])
+    with settings_override(order_approval="finance"):
+        refused = await _submitted_order(client, purchasing, shop)
+        wrong = await _submitted_order(client, purchasing, shop)
+        local = await _submitted_order(client, purchasing, shop)
+    await _cursor_reset()
+    counts, _ = await _run([
+        _ev(1, "po.refused", refused, reason="branch X is not in Finance"),
+        _ev(2, "po.approved", wrong, po_no="PO-9", total="1.00"),
+    ])
+    assert counts == {"applied": 1, "mismatch": 1}
+    o = (await client.get(f"/orders/{refused}", headers=purchasing.headers)).json()
+    assert o["status"] == "rejected" and "could not take" in o["reject_reason"]
+    o = (await client.get(f"/orders/{wrong}", headers=purchasing.headers)).json()
+    assert o["status"] == "submitted"  # never shown to the supplier
+    # while Supply approves locally, Finance's answers change nothing
+    await _cursor_reset()
+    counts, _ = await _run([_ev(1, "po.approved", local, po_no="PO-10")], mode="local")
+    assert counts == {"ignored": 1}
+    o = (await client.get(f"/orders/{local}", headers=purchasing.headers)).json()
+    assert o["status"] == "submitted"

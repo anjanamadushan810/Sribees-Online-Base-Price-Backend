@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import httpx
 from sqlalchemy import select, text
@@ -27,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.config import get_settings
 from app.models import FeedState, OutboxEvent, ProcessedEvent, SupplyOrder
 from app.services import audit, orders
+from app.services.orders import order_totals
 
 log = logging.getLogger("supply.finance_feed")
 FEED = "finance"
@@ -67,8 +69,10 @@ async def _order(db: AsyncSession, p: dict) -> SupplyOrder | None:
 async def apply(db: AsyncSession, ev: dict) -> str:
     """Apply one Finance event. Returns the outcome stored with it."""
     kind, p = ev["type"], ev.get("payload") or {}
-    if kind not in ("po.created", "po.approved", "po.rejected"):
+    if kind not in ("po.created", "po.approved", "po.rejected", "po.refused"):
         return "ignored"
+    if get_settings().order_approval != "finance":
+        return "ignored"  # the owner approves here (review 2026-11-13 #1)
     order = await _order(db, p)
     if order is None:
         log.warning("Finance event %s names an unknown order %s", ev.get("seq"), p.get("order_id"))
@@ -83,10 +87,19 @@ async def apply(db: AsyncSession, ev: dict) -> str:
         return "stale"
     if kind == "po.approved":
         await db.refresh(order, ["lines"])
+        goods = order_totals(order)["goods_total"]
+        if p.get("total") is not None and Decimal(str(p["total"])) != goods:
+            # Finance approved another amount than this order holds: never let the
+            # supplier see it (review #11, defence in depth).
+            log.error("Finance approved %s for order %s holding %s; not applied",
+                      p.get("total"), order.order_no, goods)
+            return "mismatch"
         order.approved_by_name = (p.get("approved_by_name") or "Finance")[:150]
         await orders._approve(db, order, None)
         return "applied"
     reason = (p.get("reason") or "").strip() or "rejected in Finance"
+    if kind == "po.refused":
+        reason = f"Finance could not take this order: {reason}"[:1000]
     order.status, order.reject_reason, order.rejected_at = "rejected", reason, datetime.now(UTC)
     await audit.record(db, action="order.reject", entity="order", entity_id=order.order_id,
                        after={"reason": reason, "by": p.get("rejected_by_name"),
@@ -129,6 +142,7 @@ async def run_once(sessionmaker: async_sessionmaker, client: httpx.AsyncClient,
     now = now or datetime.now(UTC)
     grace = timedelta(seconds=s.finance_feed_gap_grace_seconds)
     counts: dict[str, int] = {}
+    skipped_note = None
     async with sessionmaker() as db, db.begin():
         state = await db.get(FeedState, FEED, with_for_update=True)
         cursor, gaps = state.last_seq, dict(state.gaps or {})
@@ -148,7 +162,8 @@ async def run_once(sessionmaker: async_sessionmaker, client: httpx.AsyncClient,
             if any(now - datetime.fromisoformat(gaps[str(n)]) < grace for n in missing):
                 counts["waiting_on_gap"] = len(missing)
                 break
-            log.info("Finance sequence numbers %s never committed; moving past them", missing)
+            log.warning("Finance sequence numbers %s never committed; moving past them", missing)
+            skipped_note = f"moved past Finance numbers {missing} at {now.isoformat()}"
         for n in missing:
             gaps.pop(str(n), None)
         gaps.pop(str(ev["seq"]), None)
@@ -158,7 +173,7 @@ async def run_once(sessionmaker: async_sessionmaker, client: httpx.AsyncClient,
     async with sessionmaker() as db, db.begin():
         state = await db.get(FeedState, FEED, with_for_update=True)
         state.gaps = gaps
-        state.last_error = None
+        state.last_error = skipped_note
         state.updated_at = now
     return counts
 

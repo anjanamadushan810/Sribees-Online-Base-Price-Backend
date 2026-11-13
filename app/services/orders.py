@@ -254,6 +254,8 @@ async def submit(db: AsyncSession, actor: StaffActor, order_id: uuid.UUID) -> Su
     _emit(db, "order.submitted", order, goods_total=str(totals["goods_total"]),
           order_date=order.submitted_at.astimezone(COLOMBO).date().isoformat(),
           submitted_by_role=actor.role,
+          # Finance takes only orders submitted while it approves (review 2026-11-13 #1).
+          approval_mode=get_settings().order_approval,
           supplier={"supplier_id": str(supplier.supplier_id), "name": supplier.name,
                     "phone": phones[0] if phones else None},
           branch={"online_branch_id": str(branch.online_branch_id)

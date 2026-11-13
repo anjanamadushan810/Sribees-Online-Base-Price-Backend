@@ -1,27 +1,27 @@
 {
   "seq": 1,
-  "event_id": "91cc703c-a531-41ee-bff4-cabef51d5aeb",
+  "event_id": "3eaf29aa-bacb-4f92-a13d-e5af1a93c2e2",
   "type": "order.submitted",
-  "aggregate_id": "30e1b6fc-973b-4345-bcb0-5541c2e8570c",
-  "occurred_at": "2026-11-13T07:12:15.920944+00:00",
+  "aggregate_id": "224948d0-7be5-4699-9549-45a65cd43769",
+  "occurred_at": "2026-11-13T07:29:24.156262+00:00",
   "payload": {
     "lines": [
       {
         "boxes": 2,
         "units": 300,
-        "line_id": "fe13f8fa-9a5b-409f-a468-6800d13debc6",
+        "line_id": "70ce0400-ae60-4055-9c82-7778548151ee",
         "line_total": "37500.00",
         "unit_price": "125.00",
         "description": "බේබි ශෙරමි සබන් 75g",
         "units_per_box": 150,
-        "online_product_id": "7761cde7-7e51-401e-9957-e00a47da3819",
+        "online_product_id": "3528cbf8-b744-4782-863f-3fa7c59449a4",
         "online_variant_id": null,
-        "finance_product_id": "c3dee0ea-417c-514f-aae4-1afbb50f0884"
+        "finance_product_id": "701f4ebc-0748-54fe-a5c3-936d653bebac"
       },
       {
         "boxes": 1,
         "units": 147,
-        "line_id": "2d938613-393f-44f6-8772-18da3cf2f18f",
+        "line_id": "acfd22d5-b098-44ba-83ed-8d4d18ece76d",
         "line_total": "19110.00",
         "unit_price": "130.00",
         "description": "ලයිෆ්බෝයි සබන් 95g",
@@ -32,22 +32,23 @@
       }
     ],
     "branch": {
-      "code": "B5854CA",
+      "code": "BB3B1F4",
       "name": "Matugama-test",
-      "online_branch_id": "212ecdc5-4da9-4940-b6cf-8669f7edf7c9"
+      "online_branch_id": "73b5baff-5607-4281-a158-175f9e2c7686"
     },
     "status": "submitted",
-    "order_id": "30e1b6fc-973b-4345-bcb0-5541c2e8570c",
+    "order_id": "224948d0-7be5-4699-9549-45a65cd43769",
     "order_no": "SPO-000002",
     "supplier": {
-      "name": "Supplier 8b627a",
-      "phone": "+94751472939",
-      "supplier_id": "b1fe1b39-696b-4d19-bdbd-236eb42a0b89"
+      "name": "Supplier 601719",
+      "phone": "+94734245976",
+      "supplier_id": "6a09bdcf-5a6d-4a73-9ab0-7c4c4d327655"
     },
-    "branch_id": "89a1e64a-f137-40ae-9d5e-cb35115150ca",
+    "branch_id": "700ccfe1-a577-411b-b698-7a3125df8f44",
     "order_date": "2026-11-13",
     "goods_total": "56610.00",
-    "supplier_id": "b1fe1b39-696b-4d19-bdbd-236eb42a0b89",
+    "supplier_id": "6a09bdcf-5a6d-4a73-9ab0-7c4c4d327655",
+    "approval_mode": "finance",
     "submitted_by_role": "owner"
   }
 }

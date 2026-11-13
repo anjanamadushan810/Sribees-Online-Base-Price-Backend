@@ -2,18 +2,20 @@
 truth; mappings list only what the code uses."""
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
     Computed,
+    Date,
     DateTime,
     FetchedValue,
     ForeignKey,
     Integer,
     Numeric,
+    SmallInteger,
     String,
     Text,
     func,
@@ -40,6 +42,7 @@ class Branch(Base):
     name: Mapped[str] = mapped_column(String(120))
     online_branch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_head_office: Mapped[bool] = mapped_column(Boolean, default=False)  # 0008
     created_at: Mapped[datetime] = _created()
 
 
@@ -333,6 +336,10 @@ class SupplyOrder(Base):
     reject_reason: Mapped[str | None] = mapped_column(Text)
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     approved_by_name: Mapped[str | None] = mapped_column(String(150))
+    # 0008: back-order closed by hand (decision 31)
+    rest_closed_reason: Mapped[str | None] = mapped_column(Text)
+    rest_closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rest_closed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
 
     lines: Mapped[list["SupplyOrderLine"]] = relationship(
         lazy="selectin", order_by="SupplyOrderLine.heading", cascade="all, delete-orphan")
@@ -420,3 +427,314 @@ class SupplierDevice(Base):
     platform: Mapped[str] = mapped_column(String(20), default="android")
     created_at: Mapped[datetime] = _created()
     last_seen_at: Mapped[datetime] = _created()
+
+
+# ======================================================================= stock (0008)
+# Moved from Finance with the same columns (joint-go-live plan, phase B). journal_id
+# columns hold the id of the journal.requested event Finance posts from.
+class Setting(Base):
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(String(60), primary_key=True)
+    value: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    description: Mapped[str] = mapped_column(String(300))
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id")
+    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DocCounter(Base):
+    __tablename__ = "doc_counters"
+
+    prefix: Mapped[str] = mapped_column(String(10), primary_key=True)
+    next_no: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class Product(Base):
+    __tablename__ = "products"
+
+    product_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    sku: Mapped[str | None] = mapped_column(String(100))
+    name: Mapped[str] = mapped_column(String(255))
+    unit: Mapped[str] = mapped_column(String(10), default="each")
+    track_expiry: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    category: Mapped[str | None] = mapped_column(String(100))
+    # 0014: unit / loose (kg) / packed (this row is one pack size of parent_product_id)
+    stock_mode: Mapped[str] = mapped_column(
+        String(8),
+        default=lambda ctx: "loose" if ctx.get_current_parameters().get("unit") == "kg" else "unit",
+    )
+    parent_product_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.product_id")
+    )
+    weight_grams: Mapped[int | None] = mapped_column(Integer)
+    online_cost: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    # 0016: sellable (Online's) / bulk (repacked only, kg) / material (bags, labels)
+    kind: Mapped[str] = mapped_column(String(10), default="sellable")
+    weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
+
+
+
+
+class StockBatch(Base):
+    __tablename__ = "stock_batches"
+
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    batch_no: Mapped[str] = mapped_column(String(30))
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id")
+    )
+    product_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.product_id")
+    )
+    supplier_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("suppliers.supplier_id")
+    )
+    received_date: Mapped[date] = mapped_column(Date)
+    expiry_date: Mapped[date | None] = mapped_column(Date)
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(14, 4))
+    qty_received: Mapped[Decimal] = mapped_column(Numeric(14, 3))
+    qty_on_hand: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=Decimal("0"))
+    value_on_hand: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
+    status: Mapped[str] = mapped_column(String(12), default="available")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+
+
+class StockMove(Base):
+    __tablename__ = "stock_moves"
+
+    move_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stock_batches.batch_id")
+    )
+    move_date: Mapped[date] = mapped_column(Date)
+    move_type: Mapped[str] = mapped_column(String(20))
+    qty: Mapped[Decimal] = mapped_column(Numeric(14, 3))
+    value: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    doc_type: Mapped[str] = mapped_column(String(20))
+    doc_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    journal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True)
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+
+
+class StockTransfer(Base):
+    __tablename__ = "stock_transfers"
+
+    transfer_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    transfer_no: Mapped[str] = mapped_column(String(20))
+    from_branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id")
+    )
+    to_branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id")
+    )
+    status: Mapped[str] = mapped_column(String(20))
+    shipped_date: Mapped[date] = mapped_column(Date)
+    received_date: Mapped[date | None] = mapped_column(Date)
+    value_shipped: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    value_received: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
+    notes: Mapped[str | None] = mapped_column(Text)
+    shipped_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id")
+    )
+    received_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id")
+    )
+    ship_journal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True)
+    )
+    receive_journal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True)
+    )
+    adjustment_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stock_adjustments.adjustment_id")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    lines: Mapped[list["TransferLine"]] = relationship(
+        lazy="selectin", order_by="TransferLine.line_no"
+    )
+
+
+class TransferLine(Base):
+    __tablename__ = "transfer_lines"
+
+    transfer_line_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    transfer_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stock_transfers.transfer_id")
+    )
+    line_no: Mapped[int] = mapped_column(SmallInteger)
+    from_batch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stock_batches.batch_id")
+    )
+    qty: Mapped[Decimal] = mapped_column(Numeric(14, 3))
+    value: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    qty_received: Mapped[Decimal | None] = mapped_column(Numeric(14, 3))
+    to_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stock_batches.batch_id")
+    )
+
+
+class StockAdjustment(Base):
+    __tablename__ = "stock_adjustments"
+
+    adjustment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    adjustment_no: Mapped[str] = mapped_column(String(20))
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id")
+    )
+    kind: Mapped[str] = mapped_column(String(20))
+    reason: Mapped[str] = mapped_column(String(20))
+    adjustment_date: Mapped[date] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(20))
+    value: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    notes: Mapped[str | None] = mapped_column(Text)
+    requested_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id")
+    )
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id")
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rejected_reason: Mapped[str | None] = mapped_column(String(500))
+    journal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True)
+    )
+    source_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    lines: Mapped[list["AdjustmentLine"]] = relationship(
+        lazy="selectin", order_by="AdjustmentLine.line_no"
+    )
+
+
+class AdjustmentLine(Base):
+    __tablename__ = "adjustment_lines"
+
+    adjustment_line_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    adjustment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stock_adjustments.adjustment_id")
+    )
+    line_no: Mapped[int] = mapped_column(SmallInteger)
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stock_batches.batch_id")
+    )
+    qty_change: Mapped[Decimal] = mapped_column(Numeric(14, 3))
+    value: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+
+
+class StockCount(Base):
+    __tablename__ = "stock_counts"
+
+    count_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    count_no: Mapped[str] = mapped_column(String(20))
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id")
+    )
+    count_date: Mapped[date] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(20))
+    notes: Mapped[str | None] = mapped_column(Text)
+    started_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id")
+    )
+    submitted_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id")
+    )
+    adjustment_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stock_adjustments.adjustment_id")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    lines: Mapped[list["CountLine"]] = relationship(lazy="selectin")
+
+
+class CountLine(Base):
+    __tablename__ = "count_lines"
+
+    count_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stock_counts.count_id"), primary_key=True
+    )
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stock_batches.batch_id"), primary_key=True
+    )
+    system_qty: Mapped[Decimal] = mapped_column(Numeric(14, 3))
+    counted_qty: Mapped[Decimal | None] = mapped_column(Numeric(14, 3))
+
+
+# ---------------------------------------------------------------- online feed (0007)
+
+
+class Receipt(Base):
+    """0008: goods received against an order (replaces Finance's GRN)."""
+
+    __tablename__ = "receipts"
+
+    receipt_id: Mapped[uuid.UUID] = _uuid_pk()
+    receipt_no: Mapped[str] = mapped_column(String(20))
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("supply_orders.order_id"))
+    supplier_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("suppliers.supplier_id"))
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id"))
+    received_date: Mapped[date] = mapped_column(Date)
+    invoice_no: Mapped[str | None] = mapped_column(String(60))
+    invoice_total: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    notes: Mapped[str | None] = mapped_column(Text)
+    total: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    journal_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    received_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+    created_at: Mapped[datetime] = _created()
+
+    lines: Mapped[list["ReceiptLine"]] = relationship(
+        lazy="selectin", order_by="ReceiptLine.line_no")
+
+
+class ReceiptLine(Base):
+    __tablename__ = "receipt_lines"
+
+    receipt_line_id: Mapped[uuid.UUID] = _uuid_pk()
+    receipt_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("receipts.receipt_id"))
+    line_no: Mapped[int] = mapped_column(SmallInteger)
+    order_line_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("supply_order_lines.line_id"))
+    product_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.product_id"))
+    units: Mapped[int] = mapped_column(Integer)
+    free_units: Mapped[int] = mapped_column(Integer, default=0)
+    qty: Mapped[Decimal] = mapped_column(Numeric(14, 3))
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    line_value: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    expiry_date: Mapped[date | None] = mapped_column(Date)
+    mfg_date: Mapped[date | None] = mapped_column(Date)
+    mrp: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stock_batches.batch_id"))

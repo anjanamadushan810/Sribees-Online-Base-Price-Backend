@@ -8,6 +8,7 @@ import os
 import secrets
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 import psycopg
@@ -141,3 +142,43 @@ def ip_headers() -> dict:
     """A fresh client address per test, so per-IP limits of one test do not hit another."""
     return {"X-Forwarded-For": f"10.{secrets.randbelow(250)}.{secrets.randbelow(250)}."
                                f"{secrets.randbelow(250) + 1}"}
+
+
+# ---------------------------------------------------------------- stock (moved from Finance)
+async def _stock_branch(name: str) -> uuid.UUID:
+    """A branch that keeps stock: it has its SRIBEESonline id, so its journals reach Finance."""
+    from app.core.db import get_sessionmaker
+    from app.models import Branch
+
+    async with get_sessionmaker()() as s, s.begin():
+        b = Branch(code=f"BR{secrets.token_hex(2).upper()}", name=name,
+                   online_branch_id=uuid.uuid4())
+        s.add(b)
+        await s.flush()
+        return b.branch_id
+
+
+@pytest.fixture(scope="session")
+async def branch(database):
+    """An active retail branch (a stand-in for Matugama; nothing depends on its name)."""
+    return await _stock_branch("Test branch")
+
+
+@pytest.fixture(scope="session")
+async def other_branch(database):
+    return await _stock_branch("Other branch")
+
+
+@pytest.fixture(scope="session")
+async def accountant(client):
+    return await sign_in(client, "accountant")
+
+
+@pytest.fixture
+async def db(database):
+    """A session whose work is rolled back (moved from Finance's conftest)."""
+    from app.core.db import get_sessionmaker
+
+    async with get_sessionmaker()() as session:
+        yield session
+        await session.rollback()

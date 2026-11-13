@@ -30,6 +30,7 @@ from app.models import (
     OfferMatch,
     OnlineVariant,
     OutboxEvent,
+    Receipt,
     Supplier,
     SupplierOffer,
     SupplierProduct,
@@ -311,6 +312,9 @@ async def cancel(db: AsyncSession, actor: StaffActor, order_id: uuid.UUID, *,
     order = await get(db, order_id, actor, lock=True)
     if order.status not in ("draft", "submitted", "approved", "accepted"):
         raise Conflict(f"a {order.status} order cannot be cancelled")
+    if order.status in ("approved", "accepted") and await db.scalar(
+            select(Receipt.receipt_id).where(Receipt.order_id == order.order_id).limit(1)):
+        raise Conflict("goods were already received on this order: close the rest instead")
     if order.status != "draft" and not actor.can("orders.create"):
         raise Forbidden("purchasing or the owner cancels a submitted order")
     if order.status == "draft" and not (actor.can("orders.create")

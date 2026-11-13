@@ -43,6 +43,8 @@ TEXT = {
                   "{order_no}: Sribees ඇණවුමක් එවා ඇත. / Sribees sent an order."),
     "order_cancelled": ("ඇණවුම අවලංගුයි · Order cancelled",
                         "{order_no}: Sribees ඇණවුම අවලංගු කළා. / Sribees cancelled this order."),
+    "received": ("භාණ්ඩ ලැබුණා · Goods received",
+                 "{order_no}: Sribees ඔබේ භාණ්ඩ භාර ගත්තා. / Sribees received your goods."),
 }
 
 _token: dict = {"value": None, "expires": 0.0}

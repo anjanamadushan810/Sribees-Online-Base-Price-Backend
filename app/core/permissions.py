@@ -10,6 +10,10 @@ READ_ALL = {
     "base_prices.read",
 }
 
+# Stock (moved from Finance, joint-go-live phase B): receiving, transfers, write-offs,
+# counts. Losses are approved by the accountant up to the write-off limit, the owner above.
+STOCK_WORK = {"stock.read", "products.read", "grn.create", "stock.transfer", "stock.adjust"}
+
 ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     "owner": frozenset(
         READ_ALL
@@ -23,15 +27,21 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             "users.read",
             "users.write",
             "audit.read",
+            "products.write",
+            "stock.approve",
+            "settings.write",
         }
+        | STOCK_WORK
     ),
     # Compares offers, confirms matches, places orders, receives stock.
-    "purchasing": frozenset(READ_ALL | {"suppliers.write", "matches.write", "online.sync",
-                                         "orders.create"}),
+    "purchasing": frozenset(READ_ALL | STOCK_WORK | {"suppliers.write", "matches.write",
+                                                     "online.sync", "orders.create",
+                                                     "products.write"}),
     # Raises requests (draft orders) for their own branch; sees suppliers.
-    "branch_manager": frozenset(READ_ALL | {"orders.request"}),
+    "branch_manager": frozenset(READ_ALL | STOCK_WORK | {"orders.request"}),
     # Read-only: price history, orders.
-    "accountant": frozenset(READ_ALL | {"audit.read"}),
+    "accountant": frozenset(READ_ALL | {"audit.read", "stock.read", "products.read",
+                                        "stock.approve"}),
 }
 
 ROLES = tuple(ROLE_PERMISSIONS)

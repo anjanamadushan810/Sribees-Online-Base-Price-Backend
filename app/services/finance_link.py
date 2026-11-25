@@ -43,7 +43,7 @@ def envelope(row: OutboxEvent) -> dict:
         "seq": row.seq,
         "event_id": str(row.event_id),
         "type": row.event,
-        "aggregate_id": payload.get("order_id"),
+        "aggregate_id": payload.get("order_id") or payload.get("supplier_id"),
         "occurred_at": row.created_at.isoformat(),
         "payload": payload,
     }

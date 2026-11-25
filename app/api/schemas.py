@@ -113,24 +113,71 @@ class SupplierUserOut(ORM):
     last_login_at: datetime | None
 
 
+BANK_FIELDS = ("bank_name", "bank_branch", "bank_account_name", "bank_account_no")
+
+
 class SupplierOut(ORM):
+    """What every staff role sees. Bank fields are in SupplierFullOut, for owner and
+    accountant only (owner decision 2026-11-25); other roles never get the keys."""
+
     supplier_id: uuid.UUID
+    code: str
     name: str
     notes: str | None
     is_active: bool
     created_at: datetime
+    contact_name: str | None
+    phone: str | None
+    email: str | None
+    address: str | None
+    credit_days: int
+    is_related_party: bool
     users: list[SupplierUserOut]
 
 
-class SupplierIn(BaseModel):
+class SupplierFullOut(SupplierOut):
+    bank_name: str | None
+    bank_branch: str | None
+    bank_account_name: str | None
+    bank_account_no: str | None
+
+
+class _SupplierDetails(BaseModel):
+    contact_name: str | None = Field(default=None, max_length=150)
+    phone: str | None = Field(default=None, max_length=20)
+    email: EmailStr | None = None
+    address: str | None = Field(default=None, max_length=1000)
+    credit_days: int = Field(default=0, ge=0, le=365)
+    is_related_party: bool = False
+
+
+class SupplierIn(_SupplierDetails):
     name: str = Field(min_length=2, max_length=150)
     notes: str | None = Field(default=None, max_length=2000)
+    # Bank details are accepted only from a role with suppliers.bank (checked in the API).
+    bank_name: str | None = Field(default=None, max_length=100)
+    bank_branch: str | None = Field(default=None, max_length=100)
+    bank_account_name: str | None = Field(default=None, max_length=150)
+    bank_account_no: str | None = Field(default=None, max_length=40)
 
 
 class SupplierPatch(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=150)
     notes: str | None = Field(default=None, max_length=2000)
     is_active: bool | None = None
+    contact_name: str | None = Field(default=None, max_length=150)
+    phone: str | None = Field(default=None, max_length=20)
+    email: EmailStr | None = None
+    address: str | None = Field(default=None, max_length=1000)
+    credit_days: int | None = Field(default=None, ge=0, le=365)
+    is_related_party: bool | None = None
+
+
+class SupplierBankPatch(BaseModel):
+    bank_name: str | None = Field(default=None, max_length=100)
+    bank_branch: str | None = Field(default=None, max_length=100)
+    bank_account_name: str | None = Field(default=None, max_length=150)
+    bank_account_no: str | None = Field(default=None, max_length=40)
 
 
 class SupplierUserIn(BaseModel):

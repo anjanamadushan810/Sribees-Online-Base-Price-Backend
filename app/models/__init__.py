@@ -105,6 +105,18 @@ class Supplier(Base):
     )
     price_list_header: Mapped[str] = mapped_column(Text, default="")
     price_list_footer: Mapped[str] = mapped_column(Text, default="")
+    # Master data Finance needs, entered once here (migration 0010).
+    code: Mapped[str] = mapped_column(String(20))
+    contact_name: Mapped[str | None] = mapped_column(String(150))
+    phone: Mapped[str | None] = mapped_column(String(20))
+    email: Mapped[str | None] = mapped_column(String(255))
+    address: Mapped[str | None] = mapped_column(Text)
+    credit_days: Mapped[int] = mapped_column(Integer, default=0)
+    is_related_party: Mapped[bool] = mapped_column(Boolean, default=False)
+    bank_name: Mapped[str | None] = mapped_column(String(100))
+    bank_branch: Mapped[str | None] = mapped_column(String(100))
+    bank_account_name: Mapped[str | None] = mapped_column(String(150))
+    bank_account_no: Mapped[str | None] = mapped_column(String(40))
 
     users: Mapped[list["SupplierUser"]] = relationship(
         back_populates="supplier", lazy="selectin", order_by="SupplierUser.created_at"

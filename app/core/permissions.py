@@ -30,6 +30,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             "products.write",
             "stock.approve",
             "settings.write",
+            "suppliers.bank",
         }
         | STOCK_WORK
     ),
@@ -41,7 +42,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     "branch_manager": frozenset(READ_ALL | STOCK_WORK | {"orders.request"}),
     # Read-only: price history, orders.
     "accountant": frozenset(READ_ALL | {"audit.read", "stock.read", "products.read",
-                                        "stock.approve"}),
+                                        "stock.approve", "suppliers.bank"}),
 }
 
 ROLES = tuple(ROLE_PERMISSIONS)

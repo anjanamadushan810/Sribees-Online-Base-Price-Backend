@@ -6,7 +6,11 @@ supply/catalog with "Authorization: Bearer {ONLINE_SERVICE_TOKEN}" answers
     {"products": [{"product_id", "sku", "name", "name_si", "display_size",
                    "display_size_unit", "is_active",
                    "variants": [{"variant_id", "sku", "name", "weight_grams",
-                                 "is_active"}]}]}
+                                 "is_active"}]}],
+     "branches": [{"branch_id", "code", "name", "is_active"}]}   # branches: optional
+
+Branches are Online's: a branch missing from the answer is left alone (never deleted or
+switched off by a sync); one we already have by code is linked, not duplicated.
 
 Same pattern as Online's /internal/finance/* (token hash only on Online, internal
 network only). A product missing from a sync is marked inactive, never deleted.
@@ -24,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.matching.text import parse_size
-from app.models import OnlineProduct, OnlineVariant, SyncState
+from app.models import Branch, OnlineProduct, OnlineVariant, SyncState
 from app.services import audit
 from app.services.errors import SupplyError
 
@@ -49,10 +53,50 @@ def _size(p: dict) -> tuple[Decimal, str] | None:
     return parse_size(p.get("name") or "")
 
 
+async def apply_branches(db: AsyncSession, branches: list) -> dict:
+    """Make Supply's branches follow Online's. Matched by Online's id; a branch typed in by
+    hand with the same code and no Online id yet is linked to it instead of duplicated."""
+    out = {"created": 0, "linked": 0, "updated": 0, "skipped": 0}
+    for b in branches:
+        try:
+            bid = uuid.UUID(str(b["branch_id"]))
+        except (KeyError, ValueError):
+            out["skipped"] += 1
+            continue
+        code = (b.get("code") or "").strip()[:20]
+        name = (b.get("name") or "").strip()[:120]
+        active = bool(b.get("is_active", True))
+        if not code or not name:
+            out["skipped"] += 1
+            continue
+        row = await db.scalar(select(Branch).where(Branch.online_branch_id == bid))
+        if row is not None:
+            if (row.name, row.is_active) != (name, active):
+                row.name, row.is_active = name, active
+                out["updated"] += 1
+            continue
+        same_code = await db.scalar(select(Branch).where(Branch.code == code))
+        if same_code is not None:
+            if same_code.online_branch_id is None:
+                same_code.online_branch_id = bid
+                out["linked"] += 1
+            else:
+                out["skipped"] += 1  # the code belongs to a different Online branch
+            continue
+        db.add(Branch(code=code, name=name, online_branch_id=bid, is_active=active))
+        out["created"] += 1
+    await db.flush()
+    return out
+
+
 async def apply(db: AsyncSession, payload: dict, *, user_id: uuid.UUID | None) -> dict:
     products = payload.get("products")
     if not isinstance(products, list):
         raise SupplyError("SRIBEESonline sent no product list")
+    if not products and await db.scalar(select(OnlineProduct.online_product_id).limit(1)):
+        # An empty answer would switch every product off. The worker syncs by itself now:
+        # never trust an empty list when we already hold products.
+        raise SupplyError("SRIBEESonline sent an empty product list; nothing was changed")
     seen: set[uuid.UUID] = set()
     for p in products:
         pid = uuid.UUID(p["product_id"])
@@ -85,6 +129,8 @@ async def apply(db: AsyncSession, payload: dict, *, user_id: uuid.UUID | None) -
     total = len(seen)
     state = await db.get(SyncState, "online_catalog")
     value = {"products": total, "deactivated": gone.rowcount}
+    if isinstance(payload.get("branches"), list):
+        value["branches"] = await apply_branches(db, payload["branches"])
     if state is None:
         db.add(SyncState(key="online_catalog", value=value))
     else:

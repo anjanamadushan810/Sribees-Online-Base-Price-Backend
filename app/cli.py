@@ -43,21 +43,27 @@ async def create_owner(email: str, name: str, password_stdin: bool = False) -> N
 
 
 async def worker(once: bool) -> None:
-    """Background rounds: Finance's answers (when FINANCE_API_URL is set) and supplier
-    app alerts (when FCM_CREDENTIALS_JSON is set). A second copy waits on the lock."""
+    """Background rounds: Finance's answers (when FINANCE_API_URL is set), supplier app
+    alerts (when FCM_CREDENTIALS_JSON is set) and Online's products and branches (when
+    ONLINE_API_URL is set). A second copy waits on the lock."""
     import logging
+    import time
 
     import httpx
 
     from app.core.config import get_settings
-    from app.services import finance_link, push
+    from app.services import finance_link, online_catalog, push
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     log = logging.getLogger("supply.worker")
     settings = get_settings()
     finance_on = bool(settings.finance_api_url and settings.finance_feed_token)
-    if not finance_on and not push.enabled():
-        sys.exit("nothing to do: set FINANCE_API_URL/FINANCE_FEED_TOKEN or FCM_CREDENTIALS_JSON")
+    online_on = bool(settings.online_api_url and settings.online_service_token
+                     and settings.online_sync_hours > 0)
+    if not finance_on and not push.enabled() and not online_on:
+        sys.exit("nothing to do: set FINANCE_API_URL/FINANCE_FEED_TOKEN, FCM_CREDENTIALS_JSON "
+                 "or ONLINE_API_URL/ONLINE_SERVICE_TOKEN")
+    next_online = 0.0
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as lock_db:
         while not await finance_link.try_lock(lock_db):
@@ -66,6 +72,13 @@ async def worker(once: bool) -> None:
             await asyncio.sleep(30)
         async with httpx.AsyncClient() as client:
             while True:
+                if online_on and time.monotonic() >= next_online:
+                    next_online = time.monotonic() + settings.online_sync_hours * 3600
+                    try:
+                        async with sessionmaker() as db, db.begin():
+                            log.info("online sync: %s", await online_catalog.sync(db, user_id=None))
+                    except Exception:  # noqa: BLE001 -- logged, retried at the next interval
+                        log.exception("online sync failed")
                 if finance_on:
                     try:
                         counts = await finance_link.run_once(sessionmaker, client)

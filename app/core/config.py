@@ -29,6 +29,8 @@ class Settings(BaseSettings):
 
     # ---- SRIBEESonline link (catalogue mirror). Internal address, never the public one.
     online_api_url: str = ""
+    # The worker refreshes Online's products and branches this often (0 = never).
+    online_sync_hours: int = 6
     # Bearer token for Online's /internal/supply/* routes (Online keeps only its SHA-256).
     online_service_token: str = ""
 

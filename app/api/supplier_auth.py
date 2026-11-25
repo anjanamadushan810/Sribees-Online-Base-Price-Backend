@@ -22,7 +22,7 @@ from app.api.schemas import (
 )
 from app.core.config import get_settings
 from app.core.db import get_db
-from app.models import Supplier, SupplierDevice
+from app.models import Supplier, SupplierDevice, SupplierSession
 from app.services import supplier_auth
 from app.services.errors import SupplyError
 
@@ -119,9 +119,10 @@ async def register_device(body: DeviceIn, p: SupplierPrincipal = Depends(current
 async def me(p: SupplierPrincipal = Depends(current_supplier),
              db: AsyncSession = Depends(get_db)):
     supplier = await db.get(Supplier, p.supplier_id)
+    session = await db.get(SupplierSession, p.session_id)
     return SupplierMeOut(
         supplier_user_id=p.user.supplier_user_id, full_name=p.user.full_name,
         phone=p.user.phone, language=p.user.language, supplier_id=p.supplier_id,
         supplier_name=supplier.name, email=p.user.email,
-        must_change_password=p.user.must_change_password,
+        must_change_password=p.user.must_change_password and bool(session and session.via_password),
     )

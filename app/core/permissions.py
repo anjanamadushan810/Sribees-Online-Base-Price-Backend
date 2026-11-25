@@ -23,6 +23,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             "users.read",
             "users.write",
             "audit.read",
+            "suppliers.bank",
         }
     ),
     # Compares offers, confirms matches, places orders, receives stock.
@@ -31,7 +32,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     # Raises requests (draft orders) for their own branch; sees suppliers.
     "branch_manager": frozenset(READ_ALL | {"orders.request"}),
     # Read-only: price history, orders.
-    "accountant": frozenset(READ_ALL | {"audit.read"}),
+    "accountant": frozenset(READ_ALL | {"audit.read", "suppliers.bank"}),
 }
 
 ROLES = tuple(ROLE_PERMISSIONS)

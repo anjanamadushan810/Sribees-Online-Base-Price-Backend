@@ -1,27 +1,27 @@
 {
-  "seq": 1,
-  "event_id": "3eaf29aa-bacb-4f92-a13d-e5af1a93c2e2",
+  "seq": 5,
+  "event_id": "f66330dc-1b09-43bf-9d6e-73181a2d89e8",
   "type": "order.submitted",
-  "aggregate_id": "224948d0-7be5-4699-9549-45a65cd43769",
-  "occurred_at": "2026-11-13T07:29:24.156262+00:00",
+  "aggregate_id": "ee7947a9-67d4-4c93-a10b-d31618f4eaab",
+  "occurred_at": "2026-11-25T06:24:25.541877+00:00",
   "payload": {
     "lines": [
       {
         "boxes": 2,
         "units": 300,
-        "line_id": "70ce0400-ae60-4055-9c82-7778548151ee",
+        "line_id": "7f2187d1-4130-4ffa-bb01-9287ac4b713a",
         "line_total": "37500.00",
         "unit_price": "125.00",
         "description": "බේබි ශෙරමි සබන් 75g",
         "units_per_box": 150,
-        "online_product_id": "3528cbf8-b744-4782-863f-3fa7c59449a4",
+        "online_product_id": "14c99c54-f9ab-448b-a50e-6f84271dc917",
         "online_variant_id": null,
-        "finance_product_id": "701f4ebc-0748-54fe-a5c3-936d653bebac"
+        "finance_product_id": "17913094-e6b4-5538-8bd1-5b3b4889f0e1"
       },
       {
         "boxes": 1,
         "units": 147,
-        "line_id": "acfd22d5-b098-44ba-83ed-8d4d18ece76d",
+        "line_id": "a4ea2590-fba5-455d-bd49-8a0250a0e268",
         "line_total": "19110.00",
         "unit_price": "130.00",
         "description": "ලයිෆ්බෝයි සබන් 95g",
@@ -32,22 +32,34 @@
       }
     ],
     "branch": {
-      "code": "BB3B1F4",
+      "code": "B4CA1DF",
       "name": "Matugama-test",
-      "online_branch_id": "73b5baff-5607-4281-a158-175f9e2c7686"
+      "online_branch_id": "c8df2051-2693-4fdc-96e0-28c59ceb78e6"
     },
     "status": "submitted",
-    "order_id": "224948d0-7be5-4699-9549-45a65cd43769",
-    "order_no": "SPO-000002",
+    "order_id": "ee7947a9-67d4-4c93-a10b-d31618f4eaab",
+    "order_no": "SPO-000001",
     "supplier": {
-      "name": "Supplier 601719",
-      "phone": "+94734245976",
-      "supplier_id": "6a09bdcf-5a6d-4a73-9ab0-7c4c4d327655"
+      "code": "SUP-0002",
+      "name": "Supplier 066d8b",
+      "email": null,
+      "notes": null,
+      "phone": "+94745479209",
+      "address": null,
+      "bank_name": null,
+      "is_active": true,
+      "bank_branch": null,
+      "credit_days": 0,
+      "supplier_id": "0d27b151-e796-4dde-8695-eff6fa91667e",
+      "contact_name": null,
+      "bank_account_no": null,
+      "is_related_party": false,
+      "bank_account_name": null
     },
-    "branch_id": "700ccfe1-a577-411b-b698-7a3125df8f44",
-    "order_date": "2026-11-13",
+    "branch_id": "27ca3a71-e12c-43f6-ae5f-35245816a669",
+    "order_date": "2026-11-25",
     "goods_total": "56610.00",
-    "supplier_id": "6a09bdcf-5a6d-4a73-9ab0-7c4c4d327655",
+    "supplier_id": "0d27b151-e796-4dde-8695-eff6fa91667e",
     "approval_mode": "finance",
     "submitted_by_role": "owner"
   }

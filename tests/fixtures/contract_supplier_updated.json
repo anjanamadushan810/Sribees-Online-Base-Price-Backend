@@ -1,0 +1,27 @@
+{
+  "seq": 1,
+  "event_id": "0d1c008b-6936-475f-88f4-473124a878c1",
+  "type": "supplier.updated",
+  "aggregate_id": "ac2fd92e-b431-486d-8fd8-ac206be3a5ff",
+  "occurred_at": "2026-11-25T06:24:23.212231+00:00",
+  "payload": {
+    "supplier": {
+      "code": "SUP-0001",
+      "name": "Supplier 20754c5c",
+      "email": "nishi@example.com",
+      "notes": null,
+      "phone": "0712345678",
+      "address": "12 Main St, Matugama",
+      "bank_name": "Commercial Bank",
+      "is_active": true,
+      "bank_branch": "Matugama",
+      "credit_days": 14,
+      "supplier_id": "ac2fd92e-b431-486d-8fd8-ac206be3a5ff",
+      "contact_name": "Mr Nishantha",
+      "bank_account_no": "8001234567",
+      "is_related_party": false,
+      "bank_account_name": "Nishi Palace (Pvt) Ltd"
+    },
+    "supplier_id": "ac2fd92e-b431-486d-8fd8-ac206be3a5ff"
+  }
+}

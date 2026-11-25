@@ -36,7 +36,7 @@ from app.models import (
     SupplyOrder,
     SupplyOrderLine,
 )
-from app.services import audit
+from app.services import audit, suppliers
 from app.services.errors import Conflict, Forbidden, NotFound, SupplyError
 
 SUPPLIER_VISIBLE = ("approved", "accepted", "declined", "cancelled", "received")
@@ -238,7 +238,6 @@ async def submit(db: AsyncSession, actor: StaffActor, order_id: uuid.UUID) -> Su
     supplier = await db.get(Supplier, order.supplier_id)
     order.status, order.submitted_by, order.submitted_at = "submitted", actor.user_id, _now()
     totals = order_totals(order)
-    phones = [u.phone for u in supplier.users if u.is_active]
     # Finance keys a product by Online's variant id: a line matched to a product (not to a
     # pack size) names its only variant; a product with several needs the pack size.
     finance_item: dict[uuid.UUID, uuid.UUID | None] = {}
@@ -256,8 +255,7 @@ async def submit(db: AsyncSession, actor: StaffActor, order_id: uuid.UUID) -> Su
           submitted_by_role=actor.role,
           # Finance takes only orders submitted while it approves (review 2026-11-13 #1).
           approval_mode=get_settings().order_approval,
-          supplier={"supplier_id": str(supplier.supplier_id), "name": supplier.name,
-                    "phone": phones[0] if phones else None},
+          supplier=suppliers.finance_view(supplier),
           branch={"online_branch_id": str(branch.online_branch_id)
                   if branch.online_branch_id else None,
                   "code": branch.code, "name": branch.name},

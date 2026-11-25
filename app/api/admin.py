@@ -2,16 +2,18 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import Principal, require
 from app.api.schemas import (
+    BANK_FIELDS,
     BranchIn,
     BranchOut,
+    SupplierBankPatch,
+    SupplierFullOut,
     SupplierIn,
-    SupplierOut,
     SupplierPatch,
     SupplierUserIn,
     SupplierUserOut,
@@ -20,6 +22,7 @@ from app.api.schemas import (
     UserOut,
 )
 from app.core.db import get_db
+from app.core.permissions import has_permission
 from app.core.security import hash_password
 from app.models import Branch, Supplier, User
 from app.services import audit, suppliers
@@ -78,31 +81,56 @@ async def create_user(body: UserIn, p: Principal = Depends(require("users.write"
 
 
 # ---------------------------------------------------------------- suppliers
-@router.get("/suppliers", response_model=list[SupplierOut])
-async def list_suppliers(_: Principal = Depends(require("suppliers.read")),
+def _supplier_json(supplier: Supplier, p: Principal) -> dict:
+    """Bank fields are left out of the response (not nulled) for roles without
+    suppliers.bank."""
+    exclude = set() if has_permission(p.role, "suppliers.bank") else set(BANK_FIELDS)
+    return SupplierFullOut.model_validate(supplier).model_dump(mode="json", exclude=exclude)
+
+
+@router.get("/suppliers")
+async def list_suppliers(p: Principal = Depends(require("suppliers.read")),
                          db: AsyncSession = Depends(get_db)):
-    return (await db.scalars(select(Supplier).order_by(Supplier.name))).all()
+    rows = (await db.scalars(select(Supplier).order_by(Supplier.name))).all()
+    return [_supplier_json(r, p) for r in rows]
 
 
-@router.post("/suppliers", response_model=SupplierOut, status_code=201)
+@router.post("/suppliers", status_code=201)
 async def create_supplier(body: SupplierIn, p: Principal = Depends(require("suppliers.write")),
                           db: AsyncSession = Depends(get_db)):
-    return await suppliers.create(db, name=body.name, notes=body.notes, user_id=p.user_id)
+    details = body.model_dump(exclude={"name", "notes"})
+    if any(details.get(f) for f in BANK_FIELDS) and not has_permission(p.role, "suppliers.bank"):
+        raise HTTPException(status_code=403, detail="you do not have access to bank details")
+    supplier = await suppliers.create(db, name=body.name, notes=body.notes,
+                                      user_id=p.user_id, details=details)
+    return _supplier_json(supplier, p)
 
 
-@router.get("/suppliers/{supplier_id}", response_model=SupplierOut)
+@router.get("/suppliers/{supplier_id}")
 async def get_supplier(supplier_id: uuid.UUID,
-                       _: Principal = Depends(require("suppliers.read")),
+                       p: Principal = Depends(require("suppliers.read")),
                        db: AsyncSession = Depends(get_db)):
-    return await suppliers.get(db, supplier_id)
+    return _supplier_json(await suppliers.get(db, supplier_id), p)
 
 
-@router.patch("/suppliers/{supplier_id}", response_model=SupplierOut)
+@router.patch("/suppliers/{supplier_id}")
 async def update_supplier(supplier_id: uuid.UUID, body: SupplierPatch,
                           p: Principal = Depends(require("suppliers.write")),
                           db: AsyncSession = Depends(get_db)):
-    return await suppliers.update(db, supplier_id, changes=body.model_dump(exclude_unset=True),
-                                  user_id=p.user_id)
+    supplier = await suppliers.update(db, supplier_id,
+                                      changes=body.model_dump(exclude_unset=True),
+                                      user_id=p.user_id)
+    return _supplier_json(supplier, p)
+
+
+@router.patch("/suppliers/{supplier_id}/bank")
+async def update_supplier_bank(supplier_id: uuid.UUID, body: SupplierBankPatch,
+                               p: Principal = Depends(require("suppliers.bank")),
+                               db: AsyncSession = Depends(get_db)):
+    supplier = await suppliers.update_bank(db, supplier_id,
+                                           changes=body.model_dump(exclude_unset=True),
+                                           user_id=p.user_id)
+    return _supplier_json(supplier, p)
 
 
 @router.post("/suppliers/{supplier_id}/users", response_model=SupplierUserOut, status_code=201)

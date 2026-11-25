@@ -42,7 +42,7 @@ class Branch(Base):
     name: Mapped[str] = mapped_column(String(120))
     online_branch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    is_head_office: Mapped[bool] = mapped_column(Boolean, default=False)  # 0008
+    is_head_office: Mapped[bool] = mapped_column(Boolean, default=False)  # 0012
     created_at: Mapped[datetime] = _created()
 
 
@@ -357,7 +357,7 @@ class SupplyOrder(Base):
     reject_reason: Mapped[str | None] = mapped_column(Text)
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     approved_by_name: Mapped[str | None] = mapped_column(String(150))
-    # 0008: back-order closed by hand (decision 31)
+    # 0012: back-order closed by hand (decision 31)
     rest_closed_reason: Mapped[str | None] = mapped_column(Text)
     rest_closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     rest_closed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
@@ -450,7 +450,7 @@ class SupplierDevice(Base):
     last_seen_at: Mapped[datetime] = _created()
 
 
-# ======================================================================= stock (0008)
+# ======================================================================= stock (0012)
 # Moved from Finance with the same columns (joint-go-live plan, phase B). journal_id
 # columns hold the id of the journal.requested event Finance posts from.
 class Setting(Base):
@@ -712,7 +712,7 @@ class CountLine(Base):
 
 
 class Receipt(Base):
-    """0008: goods received against an order (replaces Finance's GRN)."""
+    """0012: goods received against an order (replaces Finance's GRN)."""
 
     __tablename__ = "receipts"
 
@@ -762,7 +762,7 @@ class ReceiptLine(Base):
 
 
 class FinancePeriod(Base):
-    """0009: a Finance month and whether it is closed (from Finance's events)."""
+    """0013: a Finance month and whether it is closed (from Finance's events)."""
 
     __tablename__ = "finance_periods"
 

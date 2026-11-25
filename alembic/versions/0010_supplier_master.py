@@ -3,7 +3,8 @@
 Entered once here and sent to Finance, so nobody types them twice. The code is numbered by
 the system (SUP-0001, never reused). Existing suppliers are numbered in creation order.
 
-When this branch is merged with the stock phase (0008, 0009), set down_revision to "0009".
+The stock phase was renumbered 0012/0013 after this one, because production already
+ran 0010 and 0011 on top of 0007.
 
 Revision ID: 0010
 """

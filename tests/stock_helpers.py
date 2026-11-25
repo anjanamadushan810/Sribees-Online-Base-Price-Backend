@@ -14,7 +14,7 @@ import secrets
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 
 async def new_product(client, who, unit="each", track_expiry=False, name="Dhal 1kg"):
@@ -33,7 +33,9 @@ async def fresh_supplier(client, owner, credit_days=30):
     from app.models import Supplier
 
     async with get_sessionmaker()() as s, s.begin():
-        sup = Supplier(name=f"Supplier PS{secrets.token_hex(3).upper()}")
+        number = await s.scalar(text("SELECT nextval('supplier_code_seq')"))
+        sup = Supplier(name=f"Supplier PS{secrets.token_hex(3).upper()}",
+                       code=f"SUP-{number:04d}")
         s.add(sup)
         await s.flush()
         return {"supplier_id": str(sup.supplier_id), "name": sup.name}

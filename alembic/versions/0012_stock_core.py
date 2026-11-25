@@ -6,14 +6,14 @@ so the moved code and tests run unchanged. Differences, all because Supply has n
 journal_id columns are plain UUIDs (the id of the `journal.requested` event that asks
 Finance to post the journal), not foreign keys to a journals table.
 
-Revision ID: 0008
-Revises: 0007
+Revision ID: 0012
+Revises: 0011
 """
 
 from alembic import op
 
-revision = "0008"
-down_revision = "0007"
+revision = "0012"
+down_revision = "0011"
 branch_labels = None
 depends_on = None
 

@@ -2,14 +2,14 @@
 move, and no journal is asked for, in a month Finance has closed. Filled from Finance's
 period.closed / period.reopened events.
 
-Revision ID: 0009
-Revises: 0008
+Revision ID: 0013
+Revises: 0012
 """
 
 from alembic import op
 
-revision = "0009"
-down_revision = "0008"
+revision = "0013"
+down_revision = "0012"
 branch_labels = None
 depends_on = None
 

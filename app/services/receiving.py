@@ -30,7 +30,7 @@ from app.models import (
     SupplyOrder,
     SupplyOrderLine,
 )
-from app.services import audit, books, ledger, settings, stock
+from app.services import audit, books, labels, ledger, settings, stock
 from app.services.actors import Actor, _now
 from app.services.errors import Conflict, Forbidden, NotFound, SupplyError
 
@@ -52,6 +52,7 @@ class ReceiptLineIn:
     mfg_date: date | None = None
     mrp: Decimal | None = None
     product_id: uuid.UUID | None = None
+    labels: tuple[str, ...] = ()  # QR label numbers stuck on these units (phase C)
 
 
 # ---------------------------------------------------------------- stock products
@@ -163,7 +164,9 @@ async def receive(
     await db.flush()
 
     total = ZERO
+    labels_required = await labels.required(db)
     received: list[tuple[ReceiptLine, object]] = []
+    to_label: list[tuple[object, tuple[str, ...]]] = []
     for n, ln in enumerate(lines, start=1):
         ol = order_lines.get(ln.order_line_id)
         if ol is None:
@@ -196,6 +199,13 @@ async def receive(
             if ln.weight_kg is not None:
                 raise SupplyError(f"{product.name} is counted in pieces, not weighed")
             qty = stock.quantity(Decimal(ln.units + ln.free_units), product)
+        if labels_required:
+            pieces = ln.units + ln.free_units
+            if product.unit != "kg" and len(ln.labels) != pieces:
+                raise SupplyError(f"{product.name}: {pieces} units need {pieces} QR labels, "
+                                  f"{len(ln.labels)} scanned")
+            if product.unit == "kg" and not ln.labels:
+                raise SupplyError(f"{product.name}: scan the QR label on each bag")
         if ln.mfg_date and ln.expiry_date and ln.mfg_date >= ln.expiry_date:
             raise SupplyError(f"{product.name}: the expiry is not after the manufacture date")
         if ln.mfg_date and ln.mfg_date > received_date:
@@ -213,6 +223,8 @@ async def receive(
         db.add(row)
         got[ol.line_id] = got.get(ol.line_id, 0) + ln.units
         received.append((row, batch))
+        if ln.labels:
+            to_label.append((batch, ln.labels))
         total += value
     receipt.total = total
     await db.flush()
@@ -233,6 +245,9 @@ async def receive(
                          move_date=received_date, doc_type="receipt", doc_id=receipt.receipt_id,
                          user_id=actor.user_id,
                          journal_id=journal.journal_id if journal else None)
+
+    for batch, numbers in to_label:
+        await labels.link(db, actor, batch=batch, numbers=list(numbers))
 
     left = _outstanding(order, got)
     if left == 0:

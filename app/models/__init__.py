@@ -771,3 +771,41 @@ class FinancePeriod(Base):
     end_date: Mapped[date] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String(10))
     updated_at: Mapped[datetime] = _created()
+
+
+# ======================================================================= QR labels (0014)
+class LabelRange(Base):
+    """A printed run of label numbers (one PDF of A4 sticker sheets)."""
+
+    __tablename__ = "label_ranges"
+
+    range_id: Mapped[uuid.UUID] = _uuid_pk()
+    range_no: Mapped[str] = mapped_column(String(20))
+    first_body: Mapped[int] = mapped_column(BigInteger)
+    last_body: Mapped[int] = mapped_column(BigInteger)
+    count: Mapped[int] = mapped_column(Integer)
+    branch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id"))
+    cols: Mapped[int] = mapped_column(Integer)
+    rows: Mapped[int] = mapped_column(Integer)
+    printed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+    created_at: Mapped[datetime] = _created()
+
+
+class Label(Base):
+    """One sticker: printed -> linked (to one batch, for ever) -> used (packed) / void."""
+
+    __tablename__ = "labels"
+
+    number: Mapped[str] = mapped_column(String(10), primary_key=True)
+    range_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("label_ranges.range_id"))
+    status: Mapped[str] = mapped_column(String(8), default="printed")
+    batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stock_batches.batch_id"))
+    linked_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+    linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    used_ref: Mapped[str | None] = mapped_column(String(80))

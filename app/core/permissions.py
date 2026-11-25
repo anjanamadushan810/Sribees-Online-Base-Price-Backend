@@ -12,7 +12,9 @@ READ_ALL = {
 
 # Stock (moved from Finance, joint-go-live phase B): receiving, transfers, write-offs,
 # counts. Losses are approved by the accountant up to the write-off limit, the owner above.
-STOCK_WORK = {"stock.read", "products.read", "grn.create", "stock.transfer", "stock.adjust"}
+# labels.print: register a run of QR label numbers and download its PDF (phase C).
+STOCK_WORK = {"stock.read", "products.read", "grn.create", "stock.transfer", "stock.adjust",
+              "labels.print"}
 
 ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     "owner": frozenset(

@@ -191,6 +191,7 @@ class ReceiptLineIn(BaseModel):
     mfg_date: date | None = None
     mrp: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
     product_id: uuid.UUID | None = None
+    labels: tuple[str, ...] = Field(default=(), max_length=5000)
 
 
 class ReceiptIn(BaseModel):

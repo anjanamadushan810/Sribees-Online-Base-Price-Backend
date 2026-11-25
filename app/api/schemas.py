@@ -41,6 +41,8 @@ class TokensOut(BaseModel):
     refresh_token: str
     token_type: Literal["bearer"] = "bearer"  # noqa: S105
     expires_in: int
+    # True after a staff-set (temporary) password: the app must ask for a new one first.
+    must_change_password: bool = False
 
 
 class StepOut(BaseModel):
@@ -107,6 +109,8 @@ class UserIn(BaseModel):
 class SupplierUserOut(ORM):
     supplier_user_id: uuid.UUID
     phone: str
+    email: str | None
+    must_change_password: bool
     full_name: str
     language: str
     is_active: bool
@@ -154,6 +158,10 @@ class _SupplierDetails(BaseModel):
 class SupplierIn(_SupplierDetails):
     name: str = Field(min_length=2, max_length=150)
     notes: str | None = Field(default=None, max_length=2000)
+    # App login created with the supplier: needs the phone and email above. The password is
+    # temporary; the supplier changes it at the first sign-in.
+    app_password: str | None = Field(default=None, min_length=8, max_length=128)
+    app_language: Language = "si"
     # Bank details are accepted only from a role with suppliers.bank (checked in the API).
     bank_name: str | None = Field(default=None, max_length=100)
     bank_branch: str | None = Field(default=None, max_length=100)
@@ -184,6 +192,14 @@ class SupplierUserIn(BaseModel):
     phone: str = Field(min_length=9, max_length=20)
     full_name: str = Field(min_length=2, max_length=150)
     language: Language = "si"
+    # Optional app login with email + password (both or neither).
+    email: EmailStr | None = None
+    password: str | None = Field(default=None, min_length=8, max_length=128)
+
+
+class PasswordSetIn(BaseModel):
+    """Staff set a new temporary password; the person changes it at the next sign-in."""
+    password: str = Field(min_length=8, max_length=128)
 
 
 class SupplierUserPatch(BaseModel):
@@ -202,6 +218,26 @@ class PhoneCodeIn(BaseModel):
     code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
 
 
+class EmailPasswordIn(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=128)
+
+
+class ChangePasswordIn(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class EmailIn(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordIn(BaseModel):
+    email: EmailStr
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+    new_password: str = Field(min_length=8, max_length=128)
+
+
 class CodeSentOut(BaseModel):
     # Same answer for every number: never reveals whether a number is registered.
     status: Literal["sent_if_registered"] = "sent_if_registered"
@@ -215,6 +251,8 @@ class SupplierMeOut(BaseModel):
     language: str
     supplier_id: uuid.UUID
     supplier_name: str
+    email: str | None = None
+    must_change_password: bool = False
 
 
 # ---------------------------------------------------------------- supplier catalogue

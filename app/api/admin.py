@@ -11,6 +11,7 @@ from app.api.schemas import (
     BANK_FIELDS,
     BranchIn,
     BranchOut,
+    PasswordSetIn,
     SupplierBankPatch,
     SupplierFullOut,
     SupplierIn,
@@ -98,11 +99,13 @@ async def list_suppliers(p: Principal = Depends(require("suppliers.read")),
 @router.post("/suppliers", status_code=201)
 async def create_supplier(body: SupplierIn, p: Principal = Depends(require("suppliers.write")),
                           db: AsyncSession = Depends(get_db)):
-    details = body.model_dump(exclude={"name", "notes"})
+    details = body.model_dump(exclude={"name", "notes", "app_password", "app_language"})
     if any(details.get(f) for f in BANK_FIELDS) and not has_permission(p.role, "suppliers.bank"):
         raise HTTPException(status_code=403, detail="you do not have access to bank details")
     supplier = await suppliers.create(db, name=body.name, notes=body.notes,
-                                      user_id=p.user_id, details=details)
+                                      user_id=p.user_id, details=details,
+                                      app_password=body.app_password,
+                                      app_language=body.app_language)
     return _supplier_json(supplier, p)
 
 
@@ -139,7 +142,18 @@ async def add_supplier_user(supplier_id: uuid.UUID, body: SupplierUserIn,
                             db: AsyncSession = Depends(get_db)):
     return await suppliers.add_user(db, supplier_id, phone=body.phone,
                                     full_name=body.full_name, language=body.language,
-                                    user_id=p.user_id)
+                                    user_id=p.user_id, email=body.email,
+                                    password=body.password)
+
+
+@router.post("/suppliers/{supplier_id}/users/{supplier_user_id}/password",
+             response_model=SupplierUserOut)
+async def set_supplier_user_password(supplier_id: uuid.UUID, supplier_user_id: uuid.UUID,
+                                     body: PasswordSetIn,
+                                     p: Principal = Depends(require("suppliers.write")),
+                                     db: AsyncSession = Depends(get_db)):
+    return await suppliers.set_user_password(db, supplier_id, supplier_user_id,
+                                             password=body.password, user_id=p.user_id)
 
 
 @router.patch("/suppliers/{supplier_id}/users/{supplier_user_id}",

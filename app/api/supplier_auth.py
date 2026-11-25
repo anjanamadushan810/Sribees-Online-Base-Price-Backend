@@ -9,10 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import SupplierPrincipal, client_ip, current_supplier
 from app.api.schemas import (
+    ChangePasswordIn,
     CodeSentOut,
+    EmailIn,
+    EmailPasswordIn,
     PhoneCodeIn,
     PhoneIn,
     RefreshIn,
+    ResetPasswordIn,
     SupplierMeOut,
     TokensOut,
 )
@@ -36,7 +40,7 @@ async def _keep_failure(db: AsyncSession, call):
 
 def _out(t: supplier_auth.SupplierTokens) -> TokensOut:
     return TokensOut(access_token=t.access_token, refresh_token=t.refresh_token,
-                     expires_in=t.expires_in)
+                     expires_in=t.expires_in, must_change_password=t.must_change_password)
 
 
 @router.post("/auth/request-code", response_model=CodeSentOut)
@@ -51,6 +55,35 @@ async def verify(body: PhoneCodeIn, request: Request, db: AsyncSession = Depends
         db, phone=body.phone, code=body.code, ip=client_ip(request),
         user_agent=request.headers.get("user-agent"),
     )))
+
+
+@router.post("/auth/login", response_model=TokensOut)
+async def login(body: EmailPasswordIn, request: Request, db: AsyncSession = Depends(get_db)):
+    return _out(await _keep_failure(db, supplier_auth.password_login(
+        db, email=body.email, password=body.password, ip=client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )))
+
+
+@router.post("/auth/change-password", status_code=204)
+async def change_password(body: ChangePasswordIn, p: SupplierPrincipal = Depends(current_supplier),
+                          db: AsyncSession = Depends(get_db)):
+    await _keep_failure(db, supplier_auth.change_password(
+        db, p.user, current=body.current_password, new=body.new_password,
+        keep_session=p.session_id))
+
+
+@router.post("/auth/forgot-password", response_model=CodeSentOut)
+async def forgot_password(body: EmailIn, request: Request, db: AsyncSession = Depends(get_db)):
+    await supplier_auth.forgot_password(db, email=body.email, ip=client_ip(request))
+    return CodeSentOut(resend_after_seconds=get_settings().otp_resend_seconds)
+
+
+@router.post("/auth/reset-password", status_code=204)
+async def reset_password(body: ResetPasswordIn, request: Request,
+                         db: AsyncSession = Depends(get_db)):
+    await _keep_failure(db, supplier_auth.reset_password(
+        db, email=body.email, code=body.code, new=body.new_password, ip=client_ip(request)))
 
 
 @router.post("/auth/refresh", response_model=TokensOut)
@@ -89,5 +122,6 @@ async def me(p: SupplierPrincipal = Depends(current_supplier),
     return SupplierMeOut(
         supplier_user_id=p.user.supplier_user_id, full_name=p.user.full_name,
         phone=p.user.phone, language=p.user.language, supplier_id=p.supplier_id,
-        supplier_name=supplier.name,
+        supplier_name=supplier.name, email=p.user.email,
+        must_change_password=p.user.must_change_password,
     )

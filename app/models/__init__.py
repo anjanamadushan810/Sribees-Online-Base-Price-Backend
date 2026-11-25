@@ -136,6 +136,13 @@ class SupplierUser(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _created()
+    # Email + password sign-in (migration 0011); the hash is argon2, never the password.
+    email: Mapped[str | None] = mapped_column(String(255))
+    password_hash: Mapped[str | None] = mapped_column(Text)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failed_logins: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     supplier: Mapped[Supplier] = relationship(back_populates="users", lazy="selectin")
 
@@ -170,6 +177,8 @@ class SupplierSession(Base):
     last_used_at: Mapped[datetime] = _created()
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Signed in with an email + password (not an SMS code): a temporary password applies.
+    via_password: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class AuditLog(Base):

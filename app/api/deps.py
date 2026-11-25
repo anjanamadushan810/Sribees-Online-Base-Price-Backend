@@ -108,7 +108,13 @@ class SupplierPrincipal:
         return self.user.supplier_id
 
 
+# A supplier signed in with a temporary (staff-set) password may only change it.
+PASSWORD_CHANGE_ALLOWED = ("/supplier/me", "/supplier/auth/change-password",
+                           "/supplier/auth/logout")
+
+
 async def current_supplier(
+    request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
     db: AsyncSession = Depends(get_db),
 ) -> SupplierPrincipal:
@@ -134,4 +140,7 @@ async def current_supplier(
     supplier = await db.get(Supplier, supplier_id)
     if supplier is None or not supplier.is_active:
         raise unauthorised
+    if user.must_change_password and session.via_password \
+            and request.url.path not in PASSWORD_CHANGE_ALLOWED:
+        raise HTTPException(status_code=403, detail="password_change_required")
     return SupplierPrincipal(user=user, session_id=session_id)

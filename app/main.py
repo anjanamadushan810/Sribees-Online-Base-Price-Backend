@@ -10,6 +10,7 @@ from app.api import (
     admin,
     auth,
     catalog,
+    dashboard,
     finance_internal,
     matching,
     orders,
@@ -83,6 +84,7 @@ def create_app() -> FastAPI:
     app.include_router(catalog.router)
     app.include_router(matching.router)
     app.include_router(orders.router)
+    app.include_router(dashboard.router)
     app.include_router(finance_internal.router)
     app.include_router(stock.router)
     app.include_router(stock_products.router)

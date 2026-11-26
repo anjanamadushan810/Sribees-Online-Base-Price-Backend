@@ -114,6 +114,9 @@ async def test_link_rules(client, owner, branch):
     assert look["status"] == "linked" and look["batch"]["batch_id"] == batch["batch_id"]
     assert look["batch"]["product_name"].startswith("Soap QR")
     assert (await client.get(f"/labels/{nums[9]}", headers=owner.headers)).json()["batch"] is None
+    rows = (await client.get("/stock/batches", headers=owner.headers,
+                             params={"product_id": batch["product_id"]})).json()
+    assert next(x for x in rows if x["batch_id"] == batch["batch_id"])["labelled"] == 5
 
 
 async def test_database_keeps_a_label_on_its_batch(client, owner, branch, db):

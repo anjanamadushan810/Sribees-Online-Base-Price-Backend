@@ -23,7 +23,7 @@ from app.api.stock_schemas import (
     SettingOut,
 )
 from app.core.db import get_db
-from app.models import Product, Receipt, Setting, StockBatch, SupplyOrder
+from app.models import Label, Product, Receipt, Setting, StockBatch, SupplyOrder
 from app.services import audit, receiving, settings, stock
 from app.services.actors import Actor
 
@@ -167,7 +167,12 @@ async def list_batches(
     if supplier_id is not None:
         batches = [b for b in batches if b.supplier_id == supplier_id]
     names = await _names(db, Product, Product.product_id, [b.product_id for b in batches])
-    return [BatchOut.model_validate(b).model_copy(update={"product_name": names[b.product_id]})
+    ids = [b.batch_id for b in batches]
+    labelled = dict((await db.execute(
+        select(Label.batch_id, func.count()).where(Label.batch_id.in_(ids))
+        .group_by(Label.batch_id))).all()) if ids else {}
+    return [BatchOut.model_validate(b).model_copy(update={
+        "product_name": names[b.product_id], "labelled": labelled.get(b.batch_id, 0)})
             for b in batches]
 
 

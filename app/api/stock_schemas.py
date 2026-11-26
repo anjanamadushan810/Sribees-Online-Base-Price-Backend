@@ -78,6 +78,7 @@ class BatchOut(ORM):
     qty_on_hand: Qty
     value_on_hand: Money
     status: str
+    labelled: int = 0  # QR labels stuck on this batch (phase C)
 
 class BatchQtyIn(BaseModel):
     batch_id: uuid.UUID

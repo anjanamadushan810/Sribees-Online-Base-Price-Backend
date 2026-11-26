@@ -13,7 +13,7 @@ from the `receipt.posted` event.
 """
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -49,7 +49,7 @@ RECEIVABLE = ("accepted", "approved")
 
 @dataclass(frozen=True)
 class ReceiptLineIn:
-    order_line_id: uuid.UUID
+    order_line_id: uuid.UUID | None  # None: a product that came without being ordered
     units: int
     free_units: int = 0
     weight_kg: Decimal | None = None
@@ -63,6 +63,41 @@ class ReceiptLineIn:
     unit_price: Decimal | None = None
     listed_price: Decimal | None = None  # the shop's prices, when staff change them
     selling_price: Decimal | None = None
+    # owner 2026-11-26: goods that came without being ordered are added at receiving, but
+    # only products we already sell on Online (a new product is made by the super admin)
+    online_variant_id: uuid.UUID | None = None
+
+
+async def _unordered(db: AsyncSession, order: SupplyOrder, ln: ReceiptLineIn, n: int, *,
+                     write: bool) -> tuple[ReceiptLineIn, SupplyOrderLine]:
+    """The order line for an item that was not ordered: checked, and added to the order
+    (marked added_at_receiving) when `write`."""
+    if ln.online_variant_id is None:
+        raise SupplyError(f"line {n}: name the order line, or the product that came")
+    if ln.unit_price is None:
+        raise SupplyError(f"line {n}: enter the bill price of an item that was not ordered")
+    variant = await db.get(OnlineVariant, ln.online_variant_id)
+    product = await db.get(OnlineProduct, variant.online_product_id) if variant else None
+    if variant is None or not variant.is_active or product is None or not product.is_active:
+        raise SupplyError(f"line {n}: that product is not sold on SRIBEES Online; the super "
+                          "admin adds new products there first")
+    if any(x.online_variant_id == ln.online_variant_id for x in order.lines):
+        raise SupplyError(f"{product.name} is already on the order: receive it on its line")
+    label = (variant.name if variant.name and variant.name.lower() not in product.name.lower()
+             else "")
+    ol = SupplyOrderLine(
+        order_id=order.order_id, supplier_id=order.supplier_id, offer_id=None,
+        online_product_id=product.online_product_id, online_variant_id=variant.online_variant_id,
+        heading=product.name[:200], label=label[:120], boxes=ln.units, units_per_box=1,
+        unit_price=ln.unit_price, mrp=ln.mrp, added_at_receiving=True)
+    if write:
+        db.add(ol)
+        await db.flush()
+        await db.refresh(ol, ["units", "line_total"])
+    else:  # a preview: the line answers under the product's pack size id
+        ol.line_id = variant.online_variant_id
+        ol.units = ln.units
+    return replace(ln, order_line_id=ol.line_id), ol
 
 
 @dataclass
@@ -171,7 +206,10 @@ async def preview(db: AsyncSession, actor: Actor, order_id: uuid.UUID, *,
     charge = (await charge_due(db, order) if transport_charge is None
               else stock.money(transport_charge))
     rows = []
-    for ln in lines:
+    for n, ln in enumerate(lines, start=1):
+        if ln.order_line_id is None:
+            ln, extra = await _unordered(db, order, ln, n, write=False)
+            order_lines[extra.line_id] = extra
         ol = order_lines.get(ln.order_line_id)
         if ol is None or ln.units <= 0:
             raise SupplyError("every line names an order line and units above zero")
@@ -294,7 +332,9 @@ async def receive(
     await books.open_period(db, received_date)
     if not lines:
         raise SupplyError("nothing received")
-    if len({ln.order_line_id for ln in lines}) != len(lines):
+    named = [ln.order_line_id for ln in lines if ln.order_line_id is not None]
+    extra = [ln.online_variant_id for ln in lines if ln.order_line_id is None]
+    if len(set(named)) != len(named) or len(set(extra)) != len(extra):
         raise SupplyError("an order line appears twice on the receipt")
     if invoice_no is not None and not invoice_no.strip():
         invoice_no = None
@@ -302,6 +342,13 @@ async def receive(
     if branch is None or not branch.is_active or branch.is_head_office:
         raise SupplyError("goods are received at an active branch that holds stock")
 
+    added = []
+    for n, ln in enumerate(lines, start=1):
+        if ln.order_line_id is None:
+            ln, _ = await _unordered(db, order, ln, n, write=True)
+        added.append(ln)
+    lines = added
+    await db.refresh(order, ["lines"])
     order_lines = {ln.line_id: ln for ln in order.lines}
     got = await received_units(db, order.order_id)
     charge = (await charge_due(db, order) if transport_charge is None

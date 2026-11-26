@@ -353,3 +353,73 @@ async def test_a_large_charge_is_the_owners_to_save(client, owner, branch):
     assert r.status_code == 403 and "owner" in r.json()["detail"]
     assert (await receive(client, owner, oid, lines, transport_charge="11000.01")
             ).status_code == 201
+
+
+async def test_a_product_that_came_without_being_ordered(client, owner, branch):
+    """Owner 2026-11-26: staff may add a product we already sell that came unordered; a
+    product that is not on Online is refused (only the super admin adds new ones)."""
+    from app.core.db import get_sessionmaker
+    from app.models import OnlineProduct, OnlineVariant
+
+    supplier = await fresh_supplier(client, owner)
+    jam = await new_product(client, owner, name="Jam")
+    oid, (jam_line,) = await approved_order(owner, supplier, branch, [(jam, 10, "100.00")])
+    async with get_sessionmaker()() as s, s.begin():
+        op = OnlineProduct(online_product_id=uuid.uuid4(), name="Honey 500g", is_active=True)
+        s.add(op)
+        await s.flush()
+        honey = OnlineVariant(online_variant_id=op.online_product_id,
+                              online_product_id=op.online_product_id, name="")
+        s.add(honey)
+        gone = OnlineProduct(online_product_id=uuid.uuid4(), name="Old Honey", is_active=False)
+        s.add(gone)
+        await s.flush()
+        s.add(OnlineVariant(online_variant_id=gone.online_product_id,
+                            online_product_id=gone.online_product_id, name="",
+                            is_active=False))
+    honey_id, gone_id = str(honey.online_variant_id), str(gone.online_product_id)
+
+    r = await receive(client, owner, oid, [{"order_line_id": None, "online_variant_id": gone_id,
+                                            "units": 2, "unit_price": "300"}])
+    assert r.status_code == 422 and "super admin" in r.json()["detail"]
+    r = await receive(client, owner, oid, [{"order_line_id": None, "online_variant_id": honey_id,
+                                            "units": 2}])
+    assert r.status_code == 422 and "bill price" in r.json()["detail"]
+    r = await receive(client, owner, oid, [
+        {"order_line_id": jam_line, "units": 10},
+        {"order_line_id": None, "online_variant_id": honey_id, "units": 3,
+         "unit_price": "450.00"}])
+    assert r.status_code == 201, r.text
+    assert r.json()["total"] == "2350.00"  # 10 x 100 + 3 x 450
+    order = (await client.get(f"/orders/{oid}", headers=owner.headers)).json()
+    added = [ln for ln in order["lines"] if ln["online_variant_id"] == honey_id]
+    assert [(ln["units"], ln["unit_price"]) for ln in added] == [(3, "450.00")]
+    assert order["status"] == "received"
+    bp = (await client.get(f"/base-prices/{honey_id}", headers=owner.headers)).json()
+    assert [h["unit_price"] for h in bp["history"]] == ["450.00"]
+
+
+async def test_the_bill_photo_is_kept_with_the_receipt(client, owner, accountant, branch):
+    supplier = await fresh_supplier(client, owner)
+    jam = await new_product(client, owner, name="Jam")
+    oid, (jam_line,) = await approved_order(owner, supplier, branch, [(jam, 2, "100.00")])
+    r = await receive(client, owner, oid, [{"order_line_id": jam_line, "units": 2}])
+    rid = r.json()["receipt_id"]
+    jpeg = bytes.fromhex("ffd8ffe000104a464946") + b"x" * 100
+    url = f"/receipts/{rid}/photo"
+    assert (await client.get(url, headers=owner.headers)).status_code == 404
+    r = await client.put(url, headers={**owner.headers, "Content-Type": "text/plain"},
+                         content=jpeg)
+    assert r.status_code == 415
+    r = await client.put(url, headers={**owner.headers, "Content-Type": "image/png"},
+                         content=jpeg)
+    assert r.status_code == 415  # the bytes are not a PNG
+    r = await client.put(url, headers={**accountant.headers, "Content-Type": "image/jpeg"},
+                         content=jpeg)
+    assert r.status_code == 403  # only who receives goods sends the bill
+    r = await client.put(url, headers={**owner.headers, "Content-Type": "image/jpeg"},
+                         content=jpeg)
+    assert r.status_code == 204, r.text
+    got = await client.get(url, headers=accountant.headers)
+    assert got.status_code == 200 and got.content == jpeg
+    assert got.headers["content-type"] == "image/jpeg"

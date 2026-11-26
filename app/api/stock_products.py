@@ -5,7 +5,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,7 +24,7 @@ from app.api.stock_schemas import (
     SettingOut,
 )
 from app.core.db import get_db
-from app.models import Label, Product, Receipt, Setting, StockBatch, SupplyOrder
+from app.models import Label, Product, Receipt, ReceiptPhoto, Setting, StockBatch, SupplyOrder
 from app.services import audit, receiving, settings, stock
 from app.services.actors import Actor
 
@@ -290,3 +290,56 @@ async def correct_product(body: CorrectionIn, request: Request,
     return await correction.correct(db, _actor(p, request), batch_id=body.batch_id,
                                     qty=body.qty, to_product_id=body.to_product_id,
                                     reason=body.reason)
+
+
+# ---------------------------------------------------------------- bill photo (P3)
+PHOTO_TYPES = ("image/jpeg", "image/png", "image/webp")
+PHOTO_MAX = 3 * 1024 * 1024
+_MAGIC = {"image/jpeg": (bytes.fromhex("ffd8ff"),),
+          "image/png": (bytes.fromhex("89504e470d0a1a0a"),),
+          "image/webp": (b"RIFF",)}
+
+
+async def _receipt_seen(db: AsyncSession, p: Principal, receipt_id: uuid.UUID) -> Receipt:
+    receipt = await db.get(Receipt, receipt_id)
+    if receipt is None or not p.can_see_branch(receipt.branch_id):
+        raise HTTPException(status_code=404, detail="not found")
+    return receipt
+
+
+@router.put("/receipts/{receipt_id}/photo", status_code=204)
+async def put_bill_photo(receipt_id: uuid.UUID, request: Request,
+                         p: Principal = Depends(require("grn.create")),
+                         db: AsyncSession = Depends(get_db)):
+    """The supplier's bill, photographed at receiving: the raw image as the request body
+    (Content-Type image/jpeg, png or webp; up to 3 MB). A new photo replaces the old one."""
+    receipt = await _receipt_seen(db, p, receipt_id)
+    kind = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if kind not in PHOTO_TYPES:
+        raise HTTPException(status_code=415, detail="send a JPEG, PNG or WebP photo")
+    data = await request.body()
+    if not data or len(data) > PHOTO_MAX:
+        raise HTTPException(status_code=413, detail="the photo must be under 3 MB")
+    if not data.startswith(_MAGIC[kind]):
+        raise HTTPException(status_code=415, detail="that file is not the picture it claims")
+    row = await db.get(ReceiptPhoto, receipt.receipt_id)
+    if row is None:
+        db.add(ReceiptPhoto(receipt_id=receipt.receipt_id, content_type=kind, data=data,
+                            uploaded_by=p.user_id))
+    else:
+        row.content_type, row.data, row.uploaded_by = kind, data, p.user_id
+    await audit.record(db, user_id=p.user_id, action="receipt.photo", entity="receipt",
+                       entity_id=receipt.receipt_id, after={"bytes": len(data), "type": kind},
+                       ip_address=client_ip(request))
+
+
+@router.get("/receipts/{receipt_id}/photo")
+async def get_bill_photo(receipt_id: uuid.UUID, p: Principal = Depends(require("stock.read")),
+                         db: AsyncSession = Depends(get_db)):
+    await _receipt_seen(db, p, receipt_id)
+    row = await db.get(ReceiptPhoto, receipt_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="no photo of the bill")
+    return Response(content=row.data, media_type=row.content_type,
+                    headers={"Cache-Control": "private, max-age=300",
+                             "X-Content-Type-Options": "nosniff"})

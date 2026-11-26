@@ -185,7 +185,9 @@ class CountOut(ORM):
 
 # ---------------------------------------------------------------- receiving (Supply)
 class ReceiptLineIn(BaseModel):
-    order_line_id: uuid.UUID
+    # None + online_variant_id: a product we sell that came without being ordered
+    order_line_id: uuid.UUID | None = None
+    online_variant_id: uuid.UUID | None = None
     units: int = Field(gt=0, le=1_000_000)
     free_units: int = Field(default=0, ge=0, le=1_000_000)
     weight_kg: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=3)

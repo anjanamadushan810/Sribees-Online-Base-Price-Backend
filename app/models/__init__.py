@@ -14,6 +14,7 @@ from sqlalchemy import (
     FetchedValue,
     ForeignKey,
     Integer,
+    LargeBinary,
     Numeric,
     SmallInteger,
     String,
@@ -377,6 +378,7 @@ class SupplyOrderLine(Base):
         UUID(as_uuid=True), ForeignKey("supply_orders.order_id"))
     supplier_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
     offer_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))  # old lines only
+    added_at_receiving: Mapped[bool] = mapped_column(Boolean, default=False)  # migration 0023
     online_product_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     online_variant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     heading: Mapped[str] = mapped_column(String(200))
@@ -880,3 +882,17 @@ class OnlineEventFailure(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     resolved_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.user_id"))
+
+
+class ReceiptPhoto(Base):
+    """0023: the supplier's bill, photographed at receiving."""
+
+    __tablename__ = "receipt_photos"
+
+    receipt_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("receipts.receipt_id"), primary_key=True)
+    content_type: Mapped[str] = mapped_column(String(20))
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    uploaded_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+    uploaded_at: Mapped[datetime] = _created()

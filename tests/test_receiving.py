@@ -279,3 +279,38 @@ async def test_review_fixes_product_weight_and_dates(client, owner, branch):
     r = await receive(client, owner, old_id, [{"order_line_id": old_line, "units": 2}],
                       day="2025-01-02")
     assert r.status_code == 422 and "outside the last" in r.json()["detail"]
+
+
+
+async def test_the_delivery_charge_goes_into_the_batch_cost(client, owner, branch):
+    """B2: Rs 100 delivery on Rs 1000 of goods, received in two parts: each batch carries its
+    share by value; together exactly the charge; the receipt total and journal include it."""
+    from app.core.db import get_sessionmaker
+    from app.models import OutboxEvent, SupplyOrder
+
+    supplier = await fresh_supplier(client, owner)
+    tea = await new_product(client, owner, name="Tea LC")
+    jam = await new_product(client, owner, name="Jam LC")
+    oid, (tea_line, jam_line) = await approved_order(
+        owner, supplier, branch, [(tea, 3, "100.00"), (jam, 7, "100.00")])
+    async with get_sessionmaker()() as s, s.begin():
+        (await s.get(SupplyOrder, uuid.UUID(oid))).delivery_charge = Decimal("100.00")
+    r1 = await receive(client, owner, oid, [{"order_line_id": tea_line, "units": 3},
+                                            {"order_line_id": jam_line, "units": 2}])
+    assert r1.status_code == 201, r1.text
+    first = r1.json()
+    assert [Decimal(x["landed_cost"]) for x in first["lines"]] == [Decimal("30.00"),
+                                                                   Decimal("20.00")]
+    assert Decimal(first["total"]) == Decimal("550.00")
+    r2 = await receive(client, owner, oid, [{"order_line_id": jam_line, "units": 5}])
+    second = r2.json()
+    assert Decimal(second["lines"][0]["landed_cost"]) == Decimal("50.00")
+    batches = {b["batch_id"]: b for b in (await client.get(
+        "/stock/batches", headers=owner.headers, params={"product_id": tea["product_id"]})).json()}
+    assert Decimal(batches[first["lines"][0]["batch_id"]]["unit_cost"]) == Decimal("110")
+    async with get_sessionmaker()() as s:
+        ev = await s.scalar(select(OutboxEvent).where(
+            OutboxEvent.event == "receipt.posted",
+            OutboxEvent.payload["receipt_id"].astext == first["receipt_id"]))
+    assert ev.payload["total"] == "550.00"
+    assert ev.payload["lines"][0]["landed_cost"] == "30.00"

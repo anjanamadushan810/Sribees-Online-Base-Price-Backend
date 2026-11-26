@@ -218,6 +218,7 @@ class ReceiptLineOut(ORM):
     mfg_date: date | None
     mrp: Money | None
     batch_id: uuid.UUID
+    landed_cost: Money = 0  # share of the supplier's delivery charge (B2)
 
 
 class ReceiptOut(ORM):

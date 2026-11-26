@@ -168,12 +168,15 @@ async def list_batches(
     if supplier_id is not None:
         batches = [b for b in batches if b.supplier_id == supplier_id]
     names = await _names(db, Product, Product.product_id, [b.product_id for b in batches])
+    units = dict((await db.execute(select(Product.product_id, Product.unit).where(
+        Product.product_id.in_({b.product_id for b in batches})))).all()) if batches else {}
     ids = [b.batch_id for b in batches]
     labelled = dict((await db.execute(
         select(Label.batch_id, func.count()).where(Label.batch_id.in_(ids))
         .group_by(Label.batch_id))).all()) if ids else {}
     return [BatchOut.model_validate(b).model_copy(update={
-        "product_name": names[b.product_id], "labelled": labelled.get(b.batch_id, 0)})
+        "product_name": names[b.product_id], "labelled": labelled.get(b.batch_id, 0),
+        "unit": units.get(b.product_id, "each")})
             for b in batches]
 
 

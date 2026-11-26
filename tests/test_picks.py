@@ -139,7 +139,7 @@ async def test_delivered_cancelled_returned(client, owner, branch):
                                   json=body(order, item, ob, product, n))).status_code == 200
     cogs_before = await balance(client, owner, "5000", branch)
     assert await event("packed", order) == "ignored"
-    assert await event("delivered", order, delivered_at="2026-11-26T04:00:00+00:00") == \
+    assert await event("delivered", order, delivered_at=f"{date.today()}T04:00:00+00:00") == \
         "consumed:2"
     assert await event("delivered", order) == "consumed:0"  # a replay changes nothing
     assert Decimal((await batch_qty(client, owner, product))[batch["batch_no"]]) == 1

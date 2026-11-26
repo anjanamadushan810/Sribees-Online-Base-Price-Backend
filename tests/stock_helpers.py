@@ -12,9 +12,19 @@ plan, phase B: "the moved Finance stock tests pass in Supply unchanged except im
 
 import secrets
 import uuid
+from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import select, text
+
+# The stock tests were written on 2026-11-26 with dates in Sep-Oct 2026. Receipts and
+# journals must lie within the last 90 days, so every test date moves with today: D()
+# keeps the same distance from 2026-11-26 (2026-10-02 = 55 days ago, whenever it runs).
+ANCHOR = date(2026, 11, 26)
+
+
+def D(day: str) -> str:  # noqa: N802 -- reads like a date literal in the tests
+    return str(date.fromisoformat(day) + (date.today() - ANCHOR))
 
 
 async def new_product(client, who, unit="each", track_expiry=False, name="Dhal 1kg"):
@@ -49,7 +59,8 @@ async def _user_id(email: str) -> uuid.UUID:
         return await s.scalar(select(User.user_id).where(User.email == email))
 
 
-async def approved_order(owner, supplier, branch, lines, day="2026-10-02"):
+async def approved_order(owner, supplier, branch, lines, day=None):
+    day = day or D("2026-10-02")
     """An approved order with one line per (product, qty, price); returns (order_id,
     [line_id, ...]). Each stock product gets an Online variant with its own id."""
     from datetime import datetime, time
@@ -110,15 +121,17 @@ async def approved_order(owner, supplier, branch, lines, day="2026-10-02"):
         return str(order.order_id), line_ids
 
 
-async def receive(client, who, order_id, lines, day="2026-10-02", **extra):
+async def receive(client, who, order_id, lines, day=None, **extra):
+    day = day or D("2026-10-02")
     r = await client.post(f"/orders/{order_id}/receipts", headers=who.headers,
                           json={"received_date": day, "lines": lines, **extra})
     return r
 
 
-async def stocked(client, owner, branch, qty="10", price="100.00", expiry=None, day="2026-10-02",
+async def stocked(client, owner, branch, qty="10", price="100.00", expiry=None, day=None,
                   product=None, track_expiry=None, name="Jam"):
     """Receive one product at the branch; returns (product, batch)."""
+    day = day or D("2026-10-02")
     supplier = await fresh_supplier(client, owner)
     if product is None:
         product = await new_product(client, owner, track_expiry=expiry is not None, name=name)

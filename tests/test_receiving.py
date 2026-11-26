@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from tests.conftest import sign_in
 from tests.stock_helpers import (
+    D,
     approved_order,
     balance,
     batch_qty,
@@ -72,7 +73,7 @@ async def test_short_delivery_is_a_back_order(client, owner, branch):
     r = await receive(client, owner, oid, [
         {"order_line_id": jam_line, "units": 2},
         {"order_line_id": tea_line, "units": 5, "expiry_date": "2027-06-30",
-         "mfg_date": "2026-09-01", "mrp": "520.00"}], day="2026-10-04")
+         "mfg_date": D("2026-09-01"), "mrp": "520.00"}], day=D("2026-10-04"))
     assert r.status_code == 201, r.text
     assert (await client.get(f"/orders/{oid}", headers=owner.headers)).json()["status"] == \
         "received"
@@ -171,7 +172,7 @@ async def test_who_may_receive_and_where(client, owner, accountant, branch, othe
     elsewhere = await sign_in(client, "branch_manager", branch_ids=[other_branch])
     assert (await receive(client, elsewhere, oid, body)).status_code == 404
     here = await sign_in(client, "branch_manager", branch_ids=[branch])
-    r = await receive(client, here, oid, body, day="2026-09-01")
+    r = await receive(client, here, oid, body, day=D("2026-09-01"))
     assert r.status_code == 422 and "before they were ordered" in r.json()["detail"]
     assert (await receive(client, here, oid, body)).status_code == 201
 

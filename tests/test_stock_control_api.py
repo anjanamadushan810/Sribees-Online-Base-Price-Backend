@@ -8,7 +8,7 @@ from decimal import Decimal
 import pytest
 
 from tests.conftest import sign_in
-from tests.stock_helpers import balance, batch_qty, stocked
+from tests.stock_helpers import D, balance, batch_qty, stocked
 
 
 @pytest.fixture(scope="session")
@@ -21,7 +21,7 @@ async def test_small_writeoff_is_approved_by_the_accountant(
 ):
     product, batch = await stocked(client, owner, branch, qty="10", price="300.00")
     r = await client.post("/stock/write-offs", headers=manager.headers, json={
-        "branch_id": str(branch), "reason": "damaged", "adjustment_date": "2026-10-10",
+        "branch_id": str(branch), "reason": "damaged", "adjustment_date": D("2026-10-10"),
         "lines": [{"batch_id": batch["batch_id"], "qty": "3"}]})
     assert r.status_code == 201, r.text
     adj = r.json()
@@ -40,9 +40,9 @@ async def test_small_writeoff_is_approved_by_the_accountant(
 
 async def test_large_writeoff_needs_the_owner(client, owner, accountant, manager, branch):
     product, batch = await stocked(client, owner, branch, qty="5", price="1500.00",
-                                   expiry="2026-10-20")
+                                   expiry=D("2026-10-20"))
     adj = (await client.post("/stock/write-offs", headers=manager.headers, json={
-        "branch_id": str(branch), "reason": "expired", "adjustment_date": "2026-10-21",
+        "branch_id": str(branch), "reason": "expired", "adjustment_date": D("2026-10-21"),
         "lines": [{"batch_id": batch["batch_id"], "qty": "5"}]})).json()
     assert adj["value"] == "-7500.00"  # above the Rs 5,000 limit
     r = await client.post(f"/stock/adjustments/{adj['adjustment_id']}/approve",
@@ -57,7 +57,7 @@ async def test_large_writeoff_needs_the_owner(client, owner, accountant, manager
 async def test_rejected_writeoff_moves_nothing(client, owner, accountant, manager, branch):
     product, batch = await stocked(client, owner, branch, qty="4")
     adj = (await client.post("/stock/write-offs", headers=manager.headers, json={
-        "branch_id": str(branch), "reason": "theft", "adjustment_date": "2026-10-11",
+        "branch_id": str(branch), "reason": "theft", "adjustment_date": D("2026-10-11"),
         "lines": [{"batch_id": batch["batch_id"], "qty": "4"}]})).json()
     r = await client.post(f"/stock/adjustments/{adj['adjustment_id']}/reject",
                           headers=accountant.headers, json={"reason": "Found in the back room"})
@@ -72,14 +72,14 @@ async def test_transfer_with_a_short_receipt(
                                    expiry="2027-01-31")
     r = await client.post("/stock/transfers", headers=manager.headers, json={
         "from_branch_id": str(branch), "to_branch_id": str(other_branch),
-        "shipped_date": "2026-10-12", "lines": [{"batch_id": batch["batch_id"], "qty": "10"}]})
+        "shipped_date": D("2026-10-12"), "lines": [{"batch_id": batch["batch_id"], "qty": "10"}]})
     assert r.status_code == 201, r.text
     transfer = r.json()
     assert transfer["value_shipped"] == "2500.00"
     transit = await balance(client, owner, "1310", other_branch)
 
     # The manager of the sending branch cannot receive at the other branch.
-    body = {"received_date": "2026-10-13",
+    body = {"received_date": D("2026-10-13"),
             "lines": [{"transfer_line_id": transfer["lines"][0]["transfer_line_id"],
                        "qty_received": "8"}]}
     assert (await client.post(f"/stock/transfers/{transfer['transfer_id']}/receive",
@@ -109,14 +109,14 @@ async def test_transfer_with_a_short_receipt(
 async def test_count_differences_post_after_approval(client, owner, accountant, manager, branch):
     product, batch = await stocked(client, owner, branch, qty="20", price="50.00")
     r = await client.post("/stock/counts", headers=manager.headers, json={
-        "branch_id": str(branch), "count_date": "2026-10-15",
+        "branch_id": str(branch), "count_date": D("2026-10-15"),
         "product_ids": [product["product_id"]]})
     assert r.status_code == 201, r.text
     count = r.json()
     assert [ln["system_qty"] for ln in count["lines"]] == ["20"]
 
     second = await client.post("/stock/counts", headers=manager.headers, json={
-        "branch_id": str(branch), "count_date": "2026-10-15",
+        "branch_id": str(branch), "count_date": D("2026-10-15"),
         "product_ids": [product["product_id"]]})
     assert second.status_code == 409  # one open count per branch
 

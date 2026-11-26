@@ -270,3 +270,22 @@ async def repack_bag(body: RepackIn, request: Request,
         db, _actor(p, request), batch_id=body.batch_id, kg_used=body.kg_used,
         repack_date=body.repack_date, notes=body.notes, scope=scoped_branches(p, None),
         outputs=[repack.RepackOut(**o.model_dump()) for o in body.outputs])
+
+
+class CorrectionIn(BaseModel):
+    batch_id: uuid.UUID
+    qty: Decimal = Field(gt=0)
+    to_product_id: uuid.UUID  # the right Online pack size
+    reason: str = Field(min_length=5, max_length=500)
+
+
+@router.post("/stock/corrections", status_code=201)
+async def correct_product(body: CorrectionIn, request: Request,
+                          p: Principal = Depends(require("stock.adjust")),
+                          db: AsyncSession = Depends(get_db)):
+    """Owner 2026-11-26: stock received on the wrong product moves to the right one."""
+    from app.services import correction
+
+    return await correction.correct(db, _actor(p, request), batch_id=body.batch_id,
+                                    qty=body.qty, to_product_id=body.to_product_id,
+                                    reason=body.reason)

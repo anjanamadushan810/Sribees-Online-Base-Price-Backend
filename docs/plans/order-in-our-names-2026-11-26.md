@@ -49,3 +49,11 @@ the 11 Nishi lines arrives.
   query to COALESCE(bill_price, unit_price) in its 0022.
 - Left: P7 (reset to 3 orders) after the store staff count Nishi's 11 lines; P2 check of the
   Nishi app on one real order; P8 staff app release comes with workspace-33's receive work.
+- 2026-11-27 night: the owner moved the receiving work from the server session (2 GB RAM) to
+  the laptop. Merged its WIP (transport by weight, bill_price, short receipt closes the order,
+  web Receive page, Online stock push, Online stock-in route + migration 128): Supply 0022,
+  Online main 638ce15 deployed (stock push still OFF on both sides). Then P3 finished on the
+  laptop: unordered existing products at receiving + bill photo (0023), web and staff app
+  0.3.0+3. Supply prod/dev 040d7c5; pushed backend f5f7a22, frontend 0745cb3, staff app
+  6480114. Next phase (max stock + automatic draft POs) goes back to workspace-33 (0024);
+  sibees-39 plans barcode receiving (0025+).

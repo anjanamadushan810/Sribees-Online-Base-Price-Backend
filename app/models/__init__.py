@@ -809,3 +809,30 @@ class Label(Base):
     linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     used_ref: Mapped[str | None] = mapped_column(String(80))
+
+
+class Pick(Base):
+    """0015: one scanned label on one Online order line (pack scan, phase E)."""
+
+    __tablename__ = "picks"
+
+    pick_id: Mapped[uuid.UUID] = _uuid_pk()
+    online_order_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    order_number: Mapped[str | None] = mapped_column(String(40))
+    order_item_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    online_branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    product_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.product_id"))
+    label: Mapped[str] = mapped_column(String(10), ForeignKey("labels.number"))
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stock_batches.batch_id"))
+    qty: Mapped[Decimal] = mapped_column(Numeric(14, 3))
+    by_weight: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(10), default="picked")
+    picked_by: Mapped[str | None] = mapped_column(String(120))
+    picked_at: Mapped[datetime] = _created()
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    move_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("stock_moves.move_id"))
+    return_move_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("stock_moves.move_id"))
+    journal_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))

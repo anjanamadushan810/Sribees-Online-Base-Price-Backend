@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     online_sync_hours: int = 6
     # Bearer token for Online's /internal/supply/* routes (Online keeps only its SHA-256).
     online_service_token: str = ""
+    # Pack scan (phase E): SHA-256 of the token Online presents on /internal/online/*
+    # (empty = 404), the peers it may come from, and how often the worker reads Online's
+    # order events (delivered / cancelled / returned) from /internal/supply/events.
+    online_pick_token_sha256: str = ""
+    online_pick_allowed_ips: str = ""
+    online_events_poll_seconds: int = 20
 
     # Who approves a submitted supplier order: "local" = the owner in Supply (until Finance
     # is live, QUESTIONS.md #9); "finance" = Finance's PO approval answers through the outbox.

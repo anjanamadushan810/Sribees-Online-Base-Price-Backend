@@ -52,7 +52,7 @@ async def worker(once: bool) -> None:
     import httpx
 
     from app.core.config import get_settings
-    from app.services import finance_link, online_catalog, push
+    from app.services import finance_link, online_catalog, online_events, push
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     log = logging.getLogger("supply.worker")
@@ -86,6 +86,13 @@ async def worker(once: bool) -> None:
                             log.info("finance round: %s", counts)
                     except Exception:  # noqa: BLE001 -- logged, retried next round
                         log.exception("finance feed round failed")
+                if online_on and online_events.enabled():
+                    try:
+                        counts = await online_events.run_once(sessionmaker, client)
+                        if counts:
+                            log.info("online events: %s", counts)
+                    except Exception:  # noqa: BLE001 -- logged, retried next round
+                        log.exception("online events round failed")
                 try:
                     counts = await push.run_once(sessionmaker, client)
                     if counts:

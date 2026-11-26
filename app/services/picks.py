@@ -82,6 +82,11 @@ async def pick(db: AsyncSession, *, order_id: uuid.UUID, order_number: str | Non
             raise SupplyError(f"{product.name} is sold by weight: enter the kilograms taken "
                               "from this bag")
         qty = stock.quantity(weight_kg, product)
+        recent = open_picks[-1] if open_picks else None
+        if (recent is not None and recent.label == number and recent.qty == qty
+                and datetime.now(UTC) - recent.picked_at < timedelta(seconds=20)):
+            # the same bag and kilograms again at once: a retry after a timeout (review #8)
+            return await item_summary(db, order_id, item_id)
         if weight_grams:
             need = Decimal(ordered_qty * weight_grams) / 1000
             done = sum((p.qty for p in open_picks), ZERO)
@@ -170,7 +175,7 @@ async def _journal(db, *, order_id, number, branch_values: dict, returned: bool,
 
 
 async def consume(db: AsyncSession, order_id: uuid.UUID, number: str | None,
-                  when: date) -> int:
+                  when: date, ref: str | None = None) -> int:
     rows = list(await db.scalars(select(Pick).where(
         Pick.online_order_id == order_id, Pick.status == "picked")
         .order_by(Pick.picked_at).with_for_update()))
@@ -181,13 +186,14 @@ async def consume(db: AsyncSession, order_id: uuid.UUID, number: str | None,
     per_batch: dict[uuid.UUID, Decimal] = defaultdict(Decimal)
     for p in rows:
         per_batch[p.batch_id] += p.qty
-    values = {bid: await stock.issue_value(db, batches[bid], qty)
+    values = {bid: await stock.issue_value(db, batches[bid], qty, for_picks=True)
               for bid, qty in per_batch.items()}
     by_branch: dict[uuid.UUID, Decimal] = defaultdict(Decimal)
     for bid, v in values.items():
         by_branch[batches[bid].branch_id] += -v
     journal = await _journal(db, order_id=order_id, number=number, branch_values=by_branch,
-                             returned=False, when=when, ref=f"online:{order_id}:delivered")
+                             returned=False, when=when,
+                             ref=ref or f"online:{order_id}:delivered")
     now = datetime.now(UTC)
     for bid, qty in per_batch.items():
         mv = await stock.move(db, batch=batches[bid], move_type="dispatch", qty=-qty,
@@ -224,23 +230,28 @@ async def release(db: AsyncSession, order_id: uuid.UUID) -> int:
 
 
 async def give_back(db: AsyncSession, order_id: uuid.UUID, number: str | None,
-                    items: list[dict], ordered: dict[str, int], when: date, why: str) -> int:
+                    items: list[dict], ordered: dict[str, int], when: date, why: str,
+                    ref: str | None = None) -> int:
     """Returned or refused goods back into the batches they left from, at the cost they
-    left at. `items` = [{order_item_id, quantity}]."""
+    left at. `items` = [{order_item_id, quantity}]. Never more than went out (a pick keeps
+    how much already came back: qty_returned)."""
     back: list[tuple[Pick, Decimal]] = []
     for it in items:
         item_id = uuid.UUID(str(it["order_item_id"]))
         want = int(it.get("quantity") or 0)
         if want <= 0:
             continue
-        consumed = list(reversed(await _item_picks(db, order_id, item_id, ("consumed",))))
-        pieces = [p for p in consumed if not p.by_weight]
-        bags = [p for p in consumed if p.by_weight]
-        back += [(p, p.qty) for p in pieces[:want]]
+        out = [p for p in reversed(await _item_picks(db, order_id, item_id, ("consumed",)))
+               if p.qty_returned < p.qty]
+        pieces = [p for p in out if not p.by_weight]
+        bags = [p for p in out if p.by_weight]
+        back += [(p, p.qty - p.qty_returned) for p in pieces[:want]]
         if bags:
-            share = Decimal(min(want, ordered.get(str(item_id), want))) / Decimal(
-                max(ordered.get(str(item_id), want), 1))
-            back += [(p, (p.qty * share).quantize(Decimal("0.001"))) for p in bags]
+            total = Decimal(max(ordered.get(str(item_id), want), 1))
+            share = min(Decimal(want), total) / total
+            for p in bags:
+                q = min(p.qty - p.qty_returned, (p.qty * share).quantize(Decimal("0.001")))
+                back.append((p, q))
     back = [(p, q) for p, q in back if q > 0]
     if not back:
         return 0
@@ -255,17 +266,18 @@ async def give_back(db: AsyncSession, order_id: uuid.UUID, number: str | None,
         plan.append((p, q, batch, value))
         by_branch[batch.branch_id] += value
     journal = await _journal(db, order_id=order_id, number=number, branch_values=by_branch,
-                             returned=True, when=when, ref=f"online:{order_id}:{why}")
+                             returned=True, when=when, ref=ref or f"online:{order_id}:{why}")
     now = datetime.now(UTC)
     for p, q, batch, value in plan:
         mv = await stock.move(db, batch=batch, move_type="return", qty=q, value=value,
                               move_date=when, doc_type="online_order", doc_id=order_id,
                               user_id=None, journal_id=journal.journal_id if journal else None)
-        if q == p.qty:
+        p.qty_returned += q
+        if p.qty_returned == p.qty:
             p.status = "returned"
         p.return_move_id, p.settled_at = mv.move_id, now
-        if not p.by_weight:
-            label = await db.get(Label, p.label, with_for_update=True)
+        label = await db.get(Label, p.label, with_for_update=True)
+        if not p.by_weight or label.status == "used":
             label.status, label.used_at, label.used_ref = "linked", None, None
     await db.flush()
     return len(plan)
@@ -283,25 +295,40 @@ def _event_date(p: dict, key: str) -> date:
 
 
 async def apply_event(db: AsyncSession, ev: dict) -> str:
-    """One Online event (order.status / order.undelivered). Returns what it did."""
+    """One Online event (order.status / order.undelivered). Returns what it did. Journal
+    references carry the event, so a second delivery after an override is booked too
+    (review #6)."""
     p = ev.get("payload") or {}
     if ev.get("type") not in ("order.status", "order.undelivered") or not p.get("order_id"):
         return "ignored"
     order_id = uuid.UUID(p["order_id"])
     number = p.get("order_number")
+    key = ev.get("event_id") or ev.get("seq")
+
+    def ref(why: str) -> str:
+        return f"online:{order_id}:{key}" if key else f"online:{order_id}:{why}"
     ordered = {ln["order_item_id"]: int(ln.get("quantity") or 0) for ln in p.get("lines") or []}
     if ev["type"] == "order.undelivered":
         n = await give_back(db, order_id, number, p.get("undelivered") or [], ordered,
-                            colombo_today(), "undelivered")
+                            colombo_today(), "undelivered", ref=ref("undelivered"))
         return f"undelivered:{n}"
     to = p.get("to_status")
     if to == "delivered":
-        return f"consumed:{await consume(db, order_id, number, _event_date(p, 'delivered_at'))}"
-    if to == "cancelled":
+        n = await consume(db, order_id, number, _event_date(p, "delivered_at"),
+                          ref=ref("delivered"))
+        return f"consumed:{n}"
+    if to in ("cancelled", "rto_initiated"):
+        # never delivered: what was held goes back to the shelf (RTO = the parcel returns
+        # to the shop, review #4)
         return f"released:{await release(db, order_id)}"
-    if to == "refunded" and p.get("returned"):
-        n = await give_back(db, order_id, number, p["returned"], ordered,
-                            _event_date(p, "return_received_at"), "returned")
+    if to == "refunded":
+        n = 0
+        # only goods that physically came back return to stock; a refund without a
+        # pick-up is money only (review #3)
+        if p.get("returned") and p.get("return_received_at"):
+            n = await give_back(db, order_id, number, p["returned"], ordered,
+                                _event_date(p, "return_received_at"), "returned",
+                                ref=ref("returned"))
         await release(db, order_id)
         return f"returned:{n}"
     return "ignored"

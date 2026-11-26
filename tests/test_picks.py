@@ -15,6 +15,7 @@ from tests.test_supplier_auth import settings_override
 TOKEN = "online-pick-test-token"  # noqa: S105
 SHA = hashlib.sha256(TOKEN.encode()).hexdigest()
 H = {"Authorization": f"Bearer {TOKEN}"}
+BACK = f"{date.today()}T05:00:00+00:00"  # return_received_at: the goods are back
 
 
 @pytest.fixture(autouse=True)
@@ -153,7 +154,10 @@ async def test_delivered_cancelled_returned(client, owner, branch):
 
     # the customer returns one: it goes back into the same batch at its cost
     lines = [{"order_item_id": str(item), "quantity": 2}]
+    # a refund with nothing picked up yet is money only (review #3)
     assert await event("refunded", order, lines=lines,
+                       returned=[{"order_item_id": str(item), "quantity": 1}]) == "returned:0"
+    assert await event("refunded", order, lines=lines, return_received_at=BACK,
                        returned=[{"order_item_id": str(item), "quantity": 1}]) == "returned:1"
     assert Decimal((await batch_qty(client, owner, product))[batch["batch_no"]]) == 2
     assert await balance(client, owner, "5000", branch) - cogs_before == Decimal("100.00")
@@ -240,3 +244,94 @@ async def test_worker_reads_online_events_once(client, owner, branch):
             assert await online_events.run_once(get_sessionmaker(), http) == {}
     assert seen == [start, start + 2]
     assert batch["batch_no"] not in await batch_qty(client, owner, product)  # emptied
+
+
+
+async def test_review_fixes(client, owner, branch, monkeypatch):
+    """Review 2026-11-26: RTO frees the units (#4); held units cannot be written off (#2);
+    a weighed bag never comes back twice (#5); a retried bag scan is one pick (#8)."""
+    from tests.stock_helpers import D, approved_order, fresh_supplier, receive
+
+    product, batch, nums = await labelled(client, owner, branch, qty=2, name="Salt RV")
+    ob = await _online_branch(branch)
+    order, item = uuid.uuid4(), uuid.uuid4()
+    for n in nums:
+        assert (await client.post("/internal/online/pick", headers=H,
+                                  json=body(order, item, ob, product, n))).status_code == 200
+    r = await client.post("/stock/write-offs", headers=owner.headers, json={
+        "branch_id": str(branch), "reason": "damaged", "adjustment_date": D("2026-11-20"),
+        "lines": [{"batch_id": batch["batch_id"], "qty": "1"}]})
+    assert r.status_code == 422 and "held for Online orders" in r.json()["detail"]
+    assert await event("rto_initiated", order) == "released:2"
+    r = await client.post("/stock/write-offs", headers=owner.headers, json={
+        "branch_id": str(branch), "reason": "damaged", "adjustment_date": D("2026-11-20"),
+        "lines": [{"batch_id": batch["batch_id"], "qty": "1"}]})
+    assert r.status_code == 201, r.text
+
+    rice = await new_product(client, owner, unit="kg", name="Rice RV")
+    supplier = await fresh_supplier(client, owner)
+    oid, (line,) = await approved_order(owner, supplier, branch, [(rice, 1, "2500.00")])
+    rng = (await client.post("/labels/ranges", headers=owner.headers, json={"count": 1})).json()
+    assert (await receive(client, owner, oid, [{"order_line_id": line, "units": 1,
+                                                "weight_kg": "10", "labels": [rng["first"]]}])
+            ).status_code == 201
+    order2, item2 = uuid.uuid4(), uuid.uuid4()
+    req = body(order2, item2, ob, rice, rng["first"], qty=2, weight_grams=1000, weight_kg="2")
+    first = (await client.post("/internal/online/pick", headers=H, json=req)).json()
+    again = (await client.post("/internal/online/pick", headers=H, json=req)).json()
+    assert first == again and Decimal(again["scanned_kg"]) == 2
+    lines = [{"order_item_id": str(item2), "quantity": 2}]
+    assert await event("delivered", order2, lines=lines) == "consumed:1"
+    got = await event("refunded", order2, lines=lines, type="order.undelivered",
+                      undelivered=[{"order_item_id": str(item2), "quantity": 1}])
+    assert got == "undelivered:1"
+    assert await event("refunded", order2, lines=lines, return_received_at=BACK,
+                       returned=[{"order_item_id": str(item2), "quantity": 2}]) == "returned:1"
+    assert await event("refunded", order2, lines=lines, return_received_at=BACK,
+                       returned=[{"order_item_id": str(item2), "quantity": 2}]) == "returned:0"
+    rows = (await client.get("/stock/batches", headers=owner.headers,
+                             params={"product_id": rice["product_id"]})).json()
+    assert Decimal(rows[0]["qty_on_hand"]) == 10  # all 2 kg back once, never 3
+
+
+async def test_worker_waits_at_a_hole_and_never_stalls(client, owner, branch, monkeypatch):
+    import httpx
+
+    from app.core.db import get_sessionmaker
+    from app.models import OnlineEventFailure, SyncState
+    from app.services import online_events, picks
+
+    async with get_sessionmaker()() as s:
+        start = int((await s.get(SyncState, "online_events")).value["seq"])
+    now = __import__("datetime").datetime.now(__import__("datetime").UTC)
+    young, old = now.isoformat(), (now - timedelta(minutes=10)).isoformat()
+    evs = {"events": []}
+
+    def online(request: httpx.Request) -> httpx.Response:
+        after = int(request.url.params["after"])
+        return httpx.Response(200, json={"events": [e for e in evs["events"] if e["seq"] > after],
+                                         "enabled": True})
+
+    bad = str(uuid.uuid4())
+    real = picks.apply_event
+
+    async def flaky(db, ev):
+        if ev["payload"].get("order_id") == bad:
+            raise picks.SupplyError("the batch is short")
+        return await real(db, ev)
+
+    monkeypatch.setattr(picks, "apply_event", flaky)
+    def ev(seq, at, oid):
+        return {"seq": seq, "event_id": str(uuid.uuid4()), "type": "order.status",
+                "occurred_at": at, "payload": {"order_id": oid, "to_status": "cancelled"}}
+    with settings_override(online_api_url="http://online.test", online_service_token="x"):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(online)) as http:
+            evs["events"] = [ev(start + 2, young, str(uuid.uuid4()))]  # start+1 not committed yet
+            assert await online_events.run_once(get_sessionmaker(), http) == {"waiting": 1}
+            evs["events"] = [ev(start + 2, old, bad), ev(start + 3, old, str(uuid.uuid4()))]
+            assert await online_events.run_once(get_sessionmaker(), http) == {
+                "failed": 1, "released": 1}
+    async with get_sessionmaker()() as s:
+        assert int((await s.get(SyncState, "online_events")).value["seq"]) == start + 3
+        failure = await s.get(OnlineEventFailure, start + 2)
+        assert failure is not None and "short" in failure.error

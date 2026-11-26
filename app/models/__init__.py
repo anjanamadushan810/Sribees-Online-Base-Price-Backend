@@ -836,3 +836,21 @@ class Pick(Base):
     return_move_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("stock_moves.move_id"))
     journal_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    qty_returned: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=Decimal("0"))
+
+
+class OnlineEventFailure(Base):
+    """0016: an Online order event Supply could not apply (kept for staff to retry)."""
+
+    __tablename__ = "online_event_failures"
+
+    seq: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    event_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    event_type: Mapped[str] = mapped_column(String(40))
+    order_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    error: Mapped[str] = mapped_column(Text)
+    payload: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = _created()
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))

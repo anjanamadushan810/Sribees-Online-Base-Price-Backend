@@ -68,12 +68,30 @@ async def create_batch(
     return batch
 
 
-async def issue_value(db: AsyncSession, batch: StockBatch, qty: Decimal) -> Decimal:
+async def reserved(db: AsyncSession, batch_id) -> Decimal:
+    """Units held for Online orders being packed (pack scan picks, phase E)."""
+    from sqlalchemy import func
+
+    from app.models import Pick
+
+    return await db.scalar(select(func.coalesce(func.sum(Pick.qty), 0)).where(
+        Pick.batch_id == batch_id, Pick.status == "picked")) or Decimal("0")
+
+
+async def issue_value(db: AsyncSession, batch: StockBatch, qty: Decimal, *,
+                      for_picks: bool = False) -> Decimal:
     """The (negative) value of taking qty out of the batch now: its average remaining
-    value, or all of it when the batch empties. Locks the batch row."""
+    value, or all of it when the batch empties. Locks the batch row. Units held for Online
+    orders (picks) cannot be written off, counted away or transferred; only their own
+    delivery (for_picks) takes them."""
     await db.refresh(batch, ["qty_on_hand", "value_on_hand"], with_for_update=True)
     if qty > batch.qty_on_hand:
         raise SupplyError(f"batch {batch.batch_no} holds {batch.qty_on_hand}, cannot issue {qty}")
+    if not for_picks:
+        held = await reserved(db, batch.batch_id)
+        if held and qty > batch.qty_on_hand - held:
+            raise SupplyError(f"batch {batch.batch_no}: {held} of {batch.qty_on_hand} are held "
+                              "for Online orders being packed; take those scans back first")
     if qty == batch.qty_on_hand:
         return -batch.value_on_hand
     return -money(batch.value_on_hand * qty / batch.qty_on_hand)

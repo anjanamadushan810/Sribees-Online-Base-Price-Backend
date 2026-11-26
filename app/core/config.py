@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     online_pick_token_sha256: str = ""
     online_pick_allowed_ips: str = ""
     online_events_poll_seconds: int = 20
+    # A missing seq (a transaction not yet committed on Online) is waited for this long
+    # before Supply reads past it (review #1, same rule as Finance's feeds).
+    online_events_gap_grace_seconds: int = 120
 
     # Who approves a submitted supplier order: "local" = the owner in Supply (until Finance
     # is live, QUESTIONS.md #9); "finance" = Finance's PO approval answers through the outbox.

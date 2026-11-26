@@ -328,11 +328,12 @@ def _emit_receipt(db, order, receipt, received, journal, *, ordered: int, outsta
                    "batch_no": b.batch_no,
                    "expiry_date": r.expiry_date.isoformat() if r.expiry_date else None}
                   for r, b in received]}))
-    db.add(OutboxEvent(event="supplier.notify", payload={
-        "order_id": str(order.order_id), "order_no": order.order_no,
-        "supplier_id": str(order.supplier_id), "branch_id": str(order.branch_id),
-        "status": order.status, "kind": "received",
-        "received_units": ordered - outstanding, "ordered_units": ordered}))
+    if not order.is_quick_buy:  # paid at their counter: nothing to tell their app
+        db.add(OutboxEvent(event="supplier.notify", payload={
+            "order_id": str(order.order_id), "order_no": order.order_no,
+            "supplier_id": str(order.supplier_id), "branch_id": str(order.branch_id),
+            "status": order.status, "kind": "received",
+            "received_units": ordered - outstanding, "ordered_units": ordered}))
 
 
 async def close_rest(db: AsyncSession, actor: Actor, order_id: uuid.UUID, *, reason: str,

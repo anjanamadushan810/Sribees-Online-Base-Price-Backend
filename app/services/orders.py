@@ -286,7 +286,8 @@ async def submit(db: AsyncSession, actor: StaffActor, order_id: uuid.UUID) -> Su
 async def _approve(db, order: SupplyOrder, user_id, *, self_approved: bool = False) -> None:
     order.status, order.approved_by, order.approved_at = "approved", user_id, _now()
     _emit(db, "order.approved", order)
-    _emit(db, "supplier.notify", order, kind="new_order")
+    if not order.is_quick_buy:  # already bought and received at their counter
+        _emit(db, "supplier.notify", order, kind="new_order")
     await audit.record(db, user_id=user_id, action="order.approve", entity="order",
                        entity_id=order.order_id, after={"self_approved": self_approved})
 

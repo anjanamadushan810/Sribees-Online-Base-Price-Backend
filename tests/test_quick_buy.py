@@ -60,6 +60,7 @@ async def test_a_market_buy_is_received_in_one_step(client, owner, branch):
             OutboxEvent.event == "receipt.posted",
             OutboxEvent.payload["order_id"].astext == out["order_id"]))
     assert "order.submitted" in kinds and "receipt.posted" in kinds  # Finance hears both
+    assert "supplier.notify" not in kinds  # paid at their counter: no alert to their app
     assert rcv.payload["invoice_no"] == "M-12" and rcv.payload["invoice_total"] == "530.00"
 
     # the same item twice, or nothing, is refused

@@ -52,7 +52,7 @@ async def worker(once: bool) -> None:
     import httpx
 
     from app.core.config import get_settings
-    from app.services import finance_link, online_catalog, online_events, push
+    from app.services import finance_link, online_catalog, online_events, online_stock, push
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     log = logging.getLogger("supply.worker")
@@ -60,7 +60,7 @@ async def worker(once: bool) -> None:
     finance_on = bool(settings.finance_api_url and settings.finance_feed_token)
     online_on = bool(settings.online_api_url and settings.online_service_token
                      and settings.online_sync_hours > 0)
-    if not finance_on and not push.enabled() and not online_on:
+    if not finance_on and not push.enabled() and not online_on and not online_stock.enabled():
         sys.exit("nothing to do: set FINANCE_API_URL/FINANCE_FEED_TOKEN, FCM_CREDENTIALS_JSON "
                  "or ONLINE_API_URL/ONLINE_SERVICE_TOKEN")
     next_online = 0.0
@@ -93,6 +93,13 @@ async def worker(once: bool) -> None:
                             log.info("online events: %s", counts)
                     except Exception:  # noqa: BLE001 -- logged, retried next round
                         log.exception("online events round failed")
+                if online_stock.enabled():
+                    try:
+                        counts = await online_stock.run_once(sessionmaker, client)
+                        if counts:
+                            log.info("online stock: %s", counts)
+                    except Exception:  # noqa: BLE001 -- logged, retried next round
+                        log.exception("online stock round failed")
                 try:
                     counts = await push.run_once(sessionmaker, client)
                     if counts:

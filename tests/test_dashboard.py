@@ -1,5 +1,6 @@
 """Home page numbers: every card equals the list behind it, by role and branch."""
 
+import uuid
 from decimal import Decimal
 
 from tests.conftest import make_branch, sign_in
@@ -120,3 +121,29 @@ async def test_a_bill_price_jump_is_flagged(client, owner, branch, shop):  # noq
     mine = [i for i in body["items"] if i["supplier_id"] == sup["supplier_id"]]
     assert [(i["old_price"], i["new_price"], i["jump"]) for i in mine] == [
         ("100.00", "115.00", True)]
+
+
+async def test_transport_is_not_a_price_jump(client, owner, branch, shop):  # noqa: F811
+    """The base price carries the transport; the price watch compares the bills."""
+    from app.core.db import get_sessionmaker
+    from app.models import OnlineProduct
+
+    async with get_sessionmaker()() as s, s.begin():
+        (await s.get(OnlineProduct, uuid.UUID(shop["coke"]))).weight_grams = 1500
+    sup = await fresh_supplier(client, owner)
+    before = row(await today(client, owner), "price_jumps")["count"]
+    for day, charge in ((D("2026-11-20"), "0"), (D("2026-11-25"), "100")):
+        r = await client.post("/quick-buys", headers=owner.headers, json={
+            "supplier_id": sup["supplier_id"], "branch_id": str(branch), "received_date": day,
+            "transport_charge": charge,
+            "lines": [{"online_variant_id": shop["coke"], "units": 5, "unit_price": "100.00"}]})
+        assert r.status_code == 201, r.text
+    assert r.json()["receipt"]["total"] == "600.00"
+    assert row(await today(client, owner), "price_jumps")["count"] == before
+    body = (await client.get("/dashboard/price-changes", headers=owner.headers,
+                             params={"days": 7})).json()
+    mine = [i for i in body["items"] if i["supplier_id"] == sup["supplier_id"]]
+    # the item may have moved from an earlier buy; the transport (Rs 20 a unit) never shows
+    assert all(i["new_price"] == "100.00" and i["old_price"] != "120.00" for i in mine), mine
+    assert len(mine) <= 1
+

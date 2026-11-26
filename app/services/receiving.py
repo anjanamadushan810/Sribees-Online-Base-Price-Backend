@@ -3,11 +3,13 @@ GRN, which this follows line for line).
 
     receipt   Dr 1300 Inventory (branch)   Cr 2020 Goods received not invoiced
 
-Each received line becomes a batch at its landed cost (paid value over paid + free
-quantity). A short delivery is a back-order (decision 31): the order stays open for the
-rest, as many receipts as needed, until every unit has arrived or staff close the rest
-with a reason. The supplier's invoice number and total are entered here (decision 23);
-Finance matches them three ways from the `receipt.posted` event.
+Each received line becomes a batch at its landed cost (paid value plus its share of the
+transport charge, over paid + free quantity). The transport charge staff read off the
+bill is split over the received lines by weight (app/services/transport.py), and the base
+price is that delivered price. A receipt closes the order, also when it is short (owner
+2026-11-26, replaces decision 31): what did not come is ordered again. The supplier's
+invoice number and total are entered here (decision 23); Finance matches them three ways
+from the `receipt.posted` event.
 """
 
 import uuid
@@ -18,10 +20,12 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.models import (
     BasePrice,
     Branch,
     OnlineProduct,
+    OnlineStockSend,
     OnlineVariant,
     OutboxEvent,
     Product,
@@ -31,7 +35,7 @@ from app.models import (
     SupplyOrder,
     SupplyOrderLine,
 )
-from app.services import audit, books, labels, ledger, settings, stock
+from app.services import audit, books, labels, ledger, settings, stock, transport
 from app.services.actors import Actor, _now
 from app.services.errors import Conflict, Forbidden, NotFound, SupplyError
 
@@ -57,36 +61,25 @@ class ReceiptLineIn:
     # the bill's price per unit (owner 2026-11-26): staff enter it at receiving; the order's
     # price is the default. It is the item's base price.
     unit_price: Decimal | None = None
+    listed_price: Decimal | None = None  # the shop's prices, when staff change them
+    selling_price: Decimal | None = None
 
 
-# ---------------------------------------------------------------- landed cost (B2)
-async def _landed_shares(db: AsyncSession, order: SupplyOrder, order_lines: dict, got: dict,
-                         lines: list) -> dict[int, Decimal]:
-    """The supplier's delivery charge spread over this receipt's lines by value (index ->
-    rupees). The receipt that completes the order takes what rounding left over, so all
-    receipts together carry exactly the charge."""
-    charge = order.delivery_charge or ZERO
-    goods = sum((ol.units * ol.unit_price for ol in order_lines.values()), ZERO)
-    if charge <= 0 or goods <= 0:
-        return {}
-    values = {}
-    for i, ln in enumerate(lines):
-        ol = order_lines.get(ln.order_line_id)
-        if ol is not None and ln.units > 0:
-            values[i] = Decimal(ln.units) * ol.unit_price
-    shares = {i: stock.money(charge * v / goods) for i, v in values.items()}
-    after = dict(got)
-    for ln in lines:
-        after[ln.order_line_id] = after.get(ln.order_line_id, 0) + ln.units
-    completes = all(after.get(ol.line_id, 0) >= ol.units for ol in order_lines.values())
-    if completes and shares:
-        before = await db.scalar(select(func.coalesce(func.sum(ReceiptLine.landed_cost), 0))
-                                 .join(Receipt, Receipt.receipt_id == ReceiptLine.receipt_id)
-                                 .where(Receipt.order_id == order.order_id)) or ZERO
-        left = charge - before - sum(shares.values(), ZERO)
-        big = max(shares, key=lambda i: values[i])
-        shares[big] = max(ZERO, shares[big] + left)
-    return shares
+@dataclass
+class _Checked:
+    """A received line that passed its checks, before anything is written for it."""
+
+    line: ReceiptLineIn
+    order_line: SupplyOrderLine
+    name: str
+    item: uuid.UUID
+    product: Product
+    qty: Decimal
+    price: Decimal  # per unit, as billed
+    value: Decimal
+    weight_grams: int | None  # of everything that arrived on this line
+
+
 
 
 # ---------------------------------------------------------------- stock products
@@ -131,6 +124,121 @@ async def ensure_product(db: AsyncSession, product_id: uuid.UUID, *,
     return product
 
 
+# ---------------------------------------------------------------- weight and transport
+async def unit_weight_grams(db: AsyncSession, variant_id: uuid.UUID) -> int | None:
+    """What one unit of a pack size weighs: the weight option's own grams, else the weight
+    entered on the Online product (the one delivery uses; owner 2026-11-26). Never guessed
+    from the size printed in the name."""
+    variant = await db.get(OnlineVariant, variant_id)
+    if variant is None:
+        return None
+    if variant.online_variant_id != variant.online_product_id and variant.weight_grams:
+        return variant.weight_grams
+    parent = await db.get(OnlineProduct, variant.online_product_id)
+    return parent.weight_grams if parent else None
+
+
+async def charge_due(db: AsyncSession, order: SupplyOrder) -> Decimal:
+    """What is still to be carried of the charge the supplier typed in their app: the
+    figure offered when staff enter none."""
+    carried = await db.scalar(select(func.coalesce(func.sum(Receipt.transport_charge), 0))
+                              .where(Receipt.order_id == order.order_id))
+    landed = await db.scalar(
+        select(func.coalesce(func.sum(ReceiptLine.landed_cost), 0))
+        .join(Receipt, Receipt.receipt_id == ReceiptLine.receipt_id)
+        .where(Receipt.order_id == order.order_id))
+    return max(ZERO, (order.delivery_charge or ZERO) - max(carried or ZERO, landed or ZERO))
+
+
+def _transport(actor: Actor, charge: Decimal, checked: list[_Checked]) -> list[Decimal]:
+    shares = transport.split_by_weight(
+        charge, [transport.WeighedLine(c.name, c.weight_grams) for c in checked])
+    goods = sum((c.value for c in checked), ZERO)
+    cap = stock.money(goods * get_settings().delivery_charge_max_pct / 100)
+    if charge > cap and actor.role != "owner":
+        raise Forbidden(f"a transport charge above Rs {cap:,.2f} for these goods is saved "
+                        "by the owner")
+    return shares
+
+
+async def preview(db: AsyncSession, actor: Actor, order_id: uuid.UUID, *,
+                  lines: list[ReceiptLineIn], transport_charge: Decimal | None,
+                  scope: set[uuid.UUID] | None = None) -> dict:
+    """What saving would make of the transport charge: each line's share and delivered
+    unit price. Writes nothing; lines without a weight are listed instead of guessed."""
+    order = await _order(db, actor, order_id, scope)
+    order_lines = {ln.line_id: ln for ln in order.lines}
+    charge = (await charge_due(db, order) if transport_charge is None
+              else stock.money(transport_charge))
+    rows = []
+    for ln in lines:
+        ol = order_lines.get(ln.order_line_id)
+        if ol is None or ln.units <= 0:
+            raise SupplyError("every line names an order line and units above zero")
+        item = ln.product_id or await stock_item_for(db, ol)
+        if ln.weight_kg is not None:
+            grams = int(ln.weight_kg * 1000)
+        else:
+            each = await unit_weight_grams(db, item) if item else None
+            grams = each * (ln.units + ln.free_units) if each else None
+        price = ol.unit_price if ln.unit_price is None else ln.unit_price
+        rows.append({"order_line_id": ol.line_id, "name": f"{ol.heading} {ol.label}".strip(),
+                     "units": ln.units, "unit_price": price,
+                     "value": stock.money(Decimal(ln.units) * price), "weight_grams": grams,
+                     "transport": None, "delivered_unit_price": None})
+    missing = [r["name"] for r in rows if charge > 0 and not r["weight_grams"]]
+    if rows and not missing:
+        shares = transport.split_by_weight(
+            charge, [transport.WeighedLine(r["name"], r["weight_grams"]) for r in rows])
+        for row, share in zip(rows, shares, strict=True):
+            row["transport"] = share
+            row["delivered_unit_price"] = transport.delivered_unit_price(
+                row["unit_price"], share, row["units"])
+    goods = sum((r["value"] for r in rows), ZERO)
+    cap = stock.money(goods * get_settings().delivery_charge_max_pct / 100)
+    return {"transport_charge": charge, "goods_total": goods, "total": goods + charge,
+            "transport_cap": cap, "over_cap": charge > cap, "missing_weight": missing,
+            "lines": rows}
+
+
+async def form(db: AsyncSession, actor: Actor, order_id: uuid.UUID,
+               scope: set[uuid.UUID] | None = None) -> dict:
+    """What the receiving page starts from: what is still due on each line, the order's
+    price, the unit weight, and the supplier's transport figure."""
+    order = await _order(db, actor, order_id, scope)
+    got = await received_units(db, order.order_id)
+    rows = []
+    for ol in order.lines:
+        due = ol.units - got.get(ol.line_id, 0)
+        if due <= 0:
+            continue
+        item = await stock_item_for(db, ol)
+        sizes = []
+        if item is None and ol.online_product_id is not None:
+            sizes = [{"online_variant_id": v.online_variant_id, "name": v.name}
+                     for v in await db.scalars(select(OnlineVariant).where(
+                         OnlineVariant.online_product_id == ol.online_product_id,
+                         OnlineVariant.is_active.is_(True)).order_by(OnlineVariant.name))]
+        product = await db.get(Product, item) if item else None
+        parent = (await db.get(OnlineProduct, ol.online_product_id)
+                  if ol.online_product_id else None)
+        rows.append({
+            "order_line_id": ol.line_id, "name": f"{ol.heading} {ol.label}".strip(),
+            "name_si": parent.name_si if parent else None,
+            "image_url": parent.image_url if parent else None,
+            "online_product_id": ol.online_product_id, "online_variant_id": item,
+            "pack_sizes": sizes, "due_units": due, "unit_price": ol.unit_price, "mrp": ol.mrp,
+            "by_weight": bool(product and product.unit == "kg"),
+            "unit_weight_grams": await unit_weight_grams(db, item) if item else None})
+    supplier = await db.get(Supplier, order.supplier_id)
+    branch = await db.get(Branch, order.branch_id)
+    return {"order_id": order.order_id, "order_no": order.order_no, "status": order.status,
+            "supplier_name": supplier.name, "branch_name": branch.name,
+            "online_branch_id": branch.online_branch_id,
+            "transport_charge": await charge_due(db, order),
+            "labels_required": await labels.required(db), "lines": rows}
+
+
 # ---------------------------------------------------------------- receiving
 async def received_units(db: AsyncSession, order_id: uuid.UUID) -> dict[uuid.UUID, int]:
     """Paid units received so far per order line."""
@@ -164,6 +272,7 @@ async def receive(
     invoice_total: Decimal | None,
     notes: str | None,
     lines: list[ReceiptLineIn],
+    transport_charge: Decimal | None = None,
     scope: set[uuid.UUID] | None = None,
 ) -> Receipt:
     order = await _order(db, actor, order_id, scope)
@@ -195,83 +304,48 @@ async def receive(
 
     order_lines = {ln.line_id: ln for ln in order.lines}
     got = await received_units(db, order.order_id)
+    charge = (await charge_due(db, order) if transport_charge is None
+              else stock.money(transport_charge))
+    labels_required = await labels.required(db)
+
+    checked: list[_Checked] = []
+    for n, ln in enumerate(lines, start=1):
+        checked.append(await _check_line(db, order, order_lines, got, ln, n, received_date,
+                                         labels_required))
+    shares = _transport(actor, charge, checked)
+
     receipt = Receipt(
         receipt_no=await settings.next_doc_no(db, "RCV"),
         order_id=order.order_id, supplier_id=order.supplier_id, branch_id=order.branch_id,
         received_date=received_date, invoice_no=invoice_no, invoice_total=invoice_total,
-        notes=notes, total=ZERO, received_by=actor.user_id)
+        notes=notes, total=ZERO, transport_charge=charge, received_by=actor.user_id)
     db.add(receipt)
     await db.flush()
 
-    shares = await _landed_shares(db, order, order_lines, got, lines)
     total = ZERO
-    labels_required = await labels.required(db)
     received: list[tuple[ReceiptLine, object]] = []
     to_label: list[tuple[object, tuple[str, ...]]] = []
-    for n, ln in enumerate(lines, start=1):
-        ol = order_lines.get(ln.order_line_id)
-        if ol is None:
-            raise SupplyError(f"line {n} is not on order {order.order_no}")
-        name = f"{ol.heading} {ol.label or ''}".strip()
-        if not (0 < ln.units <= MAX_UNITS) or not (0 <= ln.free_units <= MAX_UNITS):
-            raise SupplyError(f"{name}: received units must be above zero")
-        left = ol.units - got.get(ol.line_id, 0)
-        if ln.units > left:
-            raise SupplyError(f"{name}: received {ln.units} but only {left} of {ol.units} "
-                              "are still due")
-        item = await stock_item_for(db, ol)
-        if ln.product_id is not None and ln.product_id != item:
-            # Only another pack size of the same Online product (review #3).
-            variant = await db.get(OnlineVariant, ln.product_id)
-            if (variant is None or not variant.is_active
-                    or variant.online_product_id != ol.online_product_id):
-                raise SupplyError(f"{name}: that is not a pack size of this product")
-            item = ln.product_id
-        if item is None:
-            raise SupplyError(f"{name}: choose which pack size this is")
-        product = await ensure_product(db, item, by_weight=ln.weight_kg is not None)
-        if product.kind != "sellable" or not product.is_active:
-            raise SupplyError(f"{product.name} is not an active item for sale")
-        if product.unit == "kg":
-            if ln.weight_kg is None or ln.weight_kg <= 0:
-                raise SupplyError(f"{product.name} is kept by weight: enter the kilograms")
-            qty = stock.quantity(ln.weight_kg, product)
-        else:
-            if ln.weight_kg is not None:
-                raise SupplyError(f"{product.name} is counted in pieces, not weighed")
-            qty = stock.quantity(Decimal(ln.units + ln.free_units), product)
-        if labels_required:
-            pieces = ln.units + ln.free_units
-            if product.unit != "kg" and len(ln.labels) != pieces:
-                raise SupplyError(f"{product.name}: {pieces} units need {pieces} QR labels, "
-                                  f"{len(ln.labels)} scanned")
-            if product.unit == "kg" and not ln.labels:
-                raise SupplyError(f"{product.name}: scan the QR label on each bag")
-        if ln.mfg_date and ln.expiry_date and ln.mfg_date >= ln.expiry_date:
-            raise SupplyError(f"{product.name}: the expiry is not after the manufacture date")
-        if ln.mfg_date and ln.mfg_date > received_date:
-            raise SupplyError(f"{product.name}: made after it arrived?")
-        price = ol.unit_price if ln.unit_price is None else ln.unit_price
-        if price < 0:
-            raise SupplyError(f"{product.name}: the price cannot be below zero")
-        value = stock.money(Decimal(ln.units) * price)
-        landed = shares.get(n - 1, ZERO)
+    for n, (c, landed) in enumerate(zip(checked, shares, strict=True), start=1):
+        ln, ol = c.line, c.order_line
         batch = await stock.create_batch(
             db, batch_no=f"{receipt.receipt_no}-{n}", branch_id=order.branch_id,
-            product=product, supplier_id=order.supplier_id, received_date=received_date,
-            expiry_date=ln.expiry_date, qty=qty, value=value + landed)
+            product=c.product, supplier_id=order.supplier_id, received_date=received_date,
+            expiry_date=ln.expiry_date, qty=c.qty, value=c.value + landed)
         row = ReceiptLine(receipt_id=receipt.receipt_id, line_no=n, order_line_id=ol.line_id,
-                          product_id=product.product_id, units=ln.units,
-                          free_units=ln.free_units, qty=qty, unit_price=price,
-                          line_value=value, expiry_date=ln.expiry_date, mfg_date=ln.mfg_date,
-                          mrp=ln.mrp, batch_id=batch.batch_id, landed_cost=landed)
+                          product_id=c.product.product_id, units=ln.units,
+                          free_units=ln.free_units, qty=c.qty, unit_price=c.price,
+                          line_value=c.value, expiry_date=ln.expiry_date, mfg_date=ln.mfg_date,
+                          mrp=ln.mrp, batch_id=batch.batch_id, landed_cost=landed,
+                          listed_price=ln.listed_price, selling_price=ln.selling_price)
         db.add(row)
         got[ol.line_id] = got.get(ol.line_id, 0) + ln.units
         received.append((row, batch))
-        await _base_price(db, order, ol, item, price, ln.mrp or ol.mrp)
+        await _base_price(db, order, ol, c.item, c.price,
+                          transport.delivered_unit_price(c.price, landed, ln.units),
+                          ln.mrp or ol.mrp)
         if ln.labels:
             to_label.append((batch, ln.labels))
-        total += value + landed
+        total += c.value + landed
     receipt.total = total
     await db.flush()
 
@@ -297,8 +371,15 @@ async def receive(
         await labels.link(db, actor, batch=batch, numbers=list(numbers))
 
     left = _outstanding(order, got)
-    if left == 0:
-        order.status = "received"
+    order.status = "received"  # a short delivery closes the order too (owner 2026-11-26)
+    if left:
+        order.rest_closed_reason = "short delivery"
+        order.rest_closed_at, order.rest_closed_by = _now(), actor.user_id
+    if get_settings().online_stock_in:
+        await db.flush()
+        for row, _ in received:
+            db.add(OnlineStockSend(receipt_line_id=row.receipt_line_id,
+                                   receipt_id=receipt.receipt_id))
     ordered = sum(ln.units for ln in order.lines)
     _emit_receipt(db, order, receipt, received, journal, ordered=ordered, outstanding=left,
                   online_branch_id=branch.online_branch_id)
@@ -306,21 +387,83 @@ async def receive(
     await audit.record(db, user_id=actor.user_id, action="receipt.post", entity="receipt",
                        entity_id=receipt.receipt_id,
                        after={"receipt_no": receipt.receipt_no, "order_no": order.order_no,
-                              "total": str(total), "outstanding_units": left},
+                              "total": str(total), "transport_charge": str(charge),
+                              "outstanding_units": left},
                        ip_address=actor.ip_address)
     await db.refresh(receipt, ["lines"])
     return receipt
 
 
+async def _check_line(db: AsyncSession, order: SupplyOrder, order_lines: dict, got: dict,
+                      ln: ReceiptLineIn, n: int, received_date: date,
+                      labels_required: bool) -> _Checked:
+    ol = order_lines.get(ln.order_line_id)
+    if ol is None:
+        raise SupplyError(f"line {n} is not on order {order.order_no}")
+    name = f"{ol.heading} {ol.label or ''}".strip()
+    if not (0 < ln.units <= MAX_UNITS) or not (0 <= ln.free_units <= MAX_UNITS):
+        raise SupplyError(f"{name}: received units must be above zero")
+    left = ol.units - got.get(ol.line_id, 0)
+    if ln.units > left:
+        raise SupplyError(f"{name}: received {ln.units} but only {left} of {ol.units} "
+                          "are still due")
+    item = await stock_item_for(db, ol)
+    if ln.product_id is not None and ln.product_id != item:
+        # Only another pack size of the same Online product (review #3).
+        variant = await db.get(OnlineVariant, ln.product_id)
+        if (variant is None or not variant.is_active
+                or variant.online_product_id != ol.online_product_id):
+            raise SupplyError(f"{name}: that is not a pack size of this product")
+        item = ln.product_id
+    if item is None:
+        raise SupplyError(f"{name}: choose which pack size this is")
+    product = await ensure_product(db, item, by_weight=ln.weight_kg is not None)
+    if product.kind != "sellable" or not product.is_active:
+        raise SupplyError(f"{product.name} is not an active item for sale")
+    if product.unit == "kg":
+        if ln.weight_kg is None or ln.weight_kg <= 0:
+            raise SupplyError(f"{product.name} is kept by weight: enter the kilograms")
+        qty = stock.quantity(ln.weight_kg, product)
+        grams = int(qty * 1000)
+    else:
+        if ln.weight_kg is not None:
+            raise SupplyError(f"{product.name} is counted in pieces, not weighed")
+        qty = stock.quantity(Decimal(ln.units + ln.free_units), product)
+        each = await unit_weight_grams(db, item)
+        grams = each * (ln.units + ln.free_units) if each else None
+    if labels_required:
+        pieces = ln.units + ln.free_units
+        if product.unit != "kg" and len(ln.labels) != pieces:
+            raise SupplyError(f"{product.name}: {pieces} units need {pieces} QR labels, "
+                              f"{len(ln.labels)} scanned")
+        if product.unit == "kg" and not ln.labels:
+            raise SupplyError(f"{product.name}: scan the QR label on each bag")
+    if ln.mfg_date and ln.expiry_date and ln.mfg_date >= ln.expiry_date:
+        raise SupplyError(f"{product.name}: the expiry is not after the manufacture date")
+    if ln.mfg_date and ln.mfg_date > received_date:
+        raise SupplyError(f"{product.name}: made after it arrived?")
+    price = ol.unit_price if ln.unit_price is None else ln.unit_price
+    if price < 0:
+        raise SupplyError(f"{product.name}: the price cannot be below zero")
+    if (ln.listed_price is not None and ln.selling_price is not None
+            and ln.selling_price > ln.listed_price):
+        raise SupplyError(f"{product.name}: the selling price is above the listed price")
+    return _Checked(line=ln, order_line=ol, name=name, item=item, product=product, qty=qty,
+                    price=price, value=stock.money(Decimal(ln.units) * price),
+                    weight_grams=grams)
+
+
 async def _base_price(db: AsyncSession, order: SupplyOrder, ol: SupplyOrderLine,
-                      variant_id: uuid.UUID, price: Decimal, mrp: Decimal | None) -> None:
-    """Base price = the price we really paid, as on the bill (owner 2026-11-26)."""
+                      variant_id: uuid.UUID, bill_price: Decimal, delivered: Decimal,
+                      mrp: Decimal | None) -> None:
+    """Base price = what a unit cost us delivered to the store: the bill price plus its
+    share of the transport (owner 2026-11-26). The bill price is kept beside it."""
     variant = await db.get(OnlineVariant, variant_id)
     if variant is None:
         return
     db.add(BasePrice(online_product_id=variant.online_product_id, online_variant_id=variant_id,
                      supplier_id=order.supplier_id, order_id=order.order_id,
-                     line_id=ol.line_id, unit_price=price, mrp=mrp))
+                     line_id=ol.line_id, unit_price=delivered, bill_price=bill_price, mrp=mrp))
 
 
 def _emit_receipt(db, order, receipt, received, journal, *, ordered: int, outstanding: int,

@@ -122,12 +122,14 @@ async def orders_summary(db: AsyncSession, actor: StaffActor) -> dict:
 
 JUMP = Decimal("1.10")  # a bill price more than 10% above the last one is flagged (owner)
 
+# bill against bill (0022): a transport charge in the base price is not a price rise
 _BILL_MOVES = """
     WITH h AS (
         SELECT b.base_price_id, b.online_product_id, b.online_variant_id, b.supplier_id,
-               b.unit_price, b.recorded_at,
-               lag(b.unit_price) OVER (PARTITION BY b.online_variant_id
-                                       ORDER BY b.recorded_at, b.base_price_id) AS prev
+               COALESCE(b.bill_price, b.unit_price) AS unit_price, b.recorded_at,
+               lag(COALESCE(b.bill_price, b.unit_price)) OVER (
+                   PARTITION BY b.online_variant_id
+                   ORDER BY b.recorded_at, b.base_price_id) AS prev
           FROM base_prices b
          WHERE b.voided_at IS NULL
     )

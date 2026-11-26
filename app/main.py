@@ -17,6 +17,7 @@ from app.api import (
     online_internal,
     orders,
     quick_buy,
+    receiving,
     stock,
     stock_products,
     supplier_auth,
@@ -94,6 +95,7 @@ def create_app() -> FastAPI:
     app.include_router(labels.router)
     app.include_router(online_internal.router)
     app.include_router(quick_buy.router)
+    app.include_router(receiving.router)
     return app
 
 

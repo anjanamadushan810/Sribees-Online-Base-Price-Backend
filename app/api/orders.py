@@ -113,7 +113,8 @@ class BasePriceOut(ORM):
     online_variant_id: uuid.UUID | None
     supplier_id: uuid.UUID
     order_id: uuid.UUID
-    unit_price: Money
+    unit_price: Money  # delivered to our store
+    bill_price: Money | None = None  # as billed; empty on prices from before 2026-11-26
     mrp: Money | None
     recorded_at: datetime
     voided_at: datetime | None

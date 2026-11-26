@@ -4,7 +4,7 @@ Contract (Online side NOT built yet; see QUESTIONS.md): GET {ONLINE_API_URL}/int
 supply/catalog with "Authorization: Bearer {ONLINE_SERVICE_TOKEN}" answers
 
     {"products": [{"product_id", "sku", "name", "name_si", "display_size",
-                   "display_size_unit", "is_active",
+                   "display_size_unit", "is_active", "image_url",
                    "variants": [{"variant_id", "sku", "name", "weight_grams",
                                  "is_active"}]}],
      "branches": [{"branch_id", "code", "name", "is_active"}]}   # branches: optional
@@ -51,6 +51,13 @@ def _size(p: dict) -> tuple[Decimal, str] | None:
         if found:
             return found
     return parse_size(p.get("name") or "")
+
+
+def _image(url) -> str | None:
+    """Only a plain web address is kept (it is shown in an <img>)."""
+    if isinstance(url, str) and url.startswith(("https://", "http://")) and len(url) <= 500:
+        return url
+    return None
 
 
 def _grams(size: tuple[Decimal, str] | None) -> int | None:
@@ -114,6 +121,7 @@ async def apply(db: AsyncSession, payload: dict, *, user_id: uuid.UUID | None) -
             display_size=p.get("display_size"), display_size_unit=p.get("display_size_unit"),
             size_amount=size[0] if size else None, size_kind=size[1] if size else None,
             is_active=bool(p.get("is_active", True)),
+            image_url=_image(p.get("image_url")),
         )
         stmt = insert(OnlineProduct).values(online_product_id=pid, **values)
         await db.execute(stmt.on_conflict_do_update(

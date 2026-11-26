@@ -283,6 +283,7 @@ class OnlineProduct(Base):
     size_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 3))
     size_kind: Mapped[str | None] = mapped_column(String(8))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    image_url: Mapped[str | None] = mapped_column(String(500))  # main photo (migration 0020)
     synced_at: Mapped[datetime] = _created()
 
 

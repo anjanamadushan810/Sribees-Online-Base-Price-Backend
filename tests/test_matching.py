@@ -235,3 +235,67 @@ def test_real_catalogue_cases(heading, label, good, bad):
         assert good in picked
     if bad:
         assert bad not in picked
+
+
+async def test_photo_comes_with_the_product(client, purchasing, owner):
+    """Owner 2026-11-26: the matching screen shows the Online product's photo."""
+    from app.core.db import get_sessionmaker
+    from app.models import OnlineProduct
+    from app.services import online_catalog
+
+    pid = uuid.uuid4()
+    payload = online_payload((pid, "IMG-1", "Photo Soap 70g", None, None, None))
+    payload["products"][0]["image_url"] = "https://api.example.lk/uploads/products/soap.webp"
+    bad = uuid.uuid4()
+    payload["products"] += online_payload(
+        (bad, "IMG-2", "Bad Photo 70g", None, None, None))["products"]
+    payload["products"][1]["image_url"] = "javascript:alert(1)"
+    async with get_sessionmaker()() as s, s.begin():
+        await online_catalog.apply(s, {"products": PAYLOAD["products"] + payload["products"]},
+                                   user_id=None)
+    async with get_sessionmaker()() as s:
+        assert (await s.get(OnlineProduct, pid)).image_url.endswith("/soap.webp")
+        assert (await s.get(OnlineProduct, bad)).image_url is None
+    r = await client.get("/online-products?q=Photo Soap", headers=purchasing.headers)
+    assert r.json()[0]["image_url"].endswith("/soap.webp")
+    async with get_sessionmaker()() as s, s.begin():
+        await online_catalog.apply(s, PAYLOAD, user_id=None)
+
+
+async def test_a_matched_item_is_matched_again_by_itself(client, owner, purchasing):
+    """Owner 2026-11-26: once matched, the same item from that supplier (the next bill's
+    line with the same name) gets the same product by itself."""
+    from app.core.db import get_sessionmaker
+    from app.models import SupplierOffer, SupplierProduct, SupplierSection
+    from app.services import online_catalog
+    from tests.stock_helpers import fresh_supplier
+
+    async with get_sessionmaker()() as s, s.begin():
+        await online_catalog.apply(s, PAYLOAD, user_id=None)
+    sup = await fresh_supplier(client, owner)
+    sid = uuid.UUID(sup["supplier_id"])
+    async with get_sessionmaker()() as s, s.begin():
+        sec = SupplierSection(supplier_id=sid, title="Bills to match")
+        s.add(sec)
+        await s.flush()
+        prod = SupplierProduct(supplier_id=sid, section_id=sec.section_id, heading="Signal 120g")
+        other = SupplierProduct(supplier_id=sid, section_id=sec.section_id, heading="Signal 40g")
+        s.add_all([prod, other])
+        await s.flush()
+        first = SupplierOffer(supplier_id=sid, product_id=prod.product_id, label="A-1 · 48 pcs",
+                              price=Decimal("218"), units_per_box=1)
+        second = SupplierOffer(supplier_id=sid, product_id=prod.product_id, label="B-7 · 24 pcs",
+                               price=Decimal("220"), units_per_box=1)
+        third = SupplierOffer(supplier_id=sid, product_id=other.product_id, label="B-7 · 72 pcs",
+                              price=Decimal("111"), units_per_box=1)
+        s.add_all([first, second, third])
+        await s.flush()
+        ids = [str(first.offer_id), str(second.offer_id), str(third.offer_id)]
+    r = await client.post(f"/matching/offers/{ids[0]}/confirm", headers=purchasing.headers,
+                          json={"online_product_id": str(SIGNAL_120),
+                                "online_variant_id": str(SIGNAL_120)})
+    assert r.status_code == 204, r.text
+    matched = (await client.get(f"/suppliers/{sid}/matching?state=matched",
+                                headers=purchasing.headers)).json()
+    got = {m["offer_id"]: m["confirmed"]["online_product_id"] for m in matched}
+    assert got == {ids[0]: str(SIGNAL_120), ids[1]: str(SIGNAL_120)}  # Signal 40g is not taught

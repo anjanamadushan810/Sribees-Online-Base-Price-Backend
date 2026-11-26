@@ -66,7 +66,7 @@ async def search_items(db: AsyncSession, q: str, limit: int = 30) -> list[dict]:
         .order_by(OnlineProduct.name, OnlineVariant.name).limit(limit))).all()
     return [{"online_variant_id": v.online_variant_id, "online_product_id": p.online_product_id,
              "name": p.name, "name_si": p.name_si, "variant": v.name,
-             "weight_grams": v.weight_grams} for v, p in rows]
+             "weight_grams": v.weight_grams, "image_url": p.image_url} for v, p in rows]
 
 
 async def _section(db: AsyncSession, supplier_id: uuid.UUID) -> SupplierSection:

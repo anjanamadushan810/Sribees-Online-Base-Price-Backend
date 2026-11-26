@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections import defaultdict
 from datetime import UTC, datetime
@@ -39,7 +40,65 @@ def _candidate(p: OnlineProduct) -> scorer.Candidate:
                             name_si=p.name_si, size=size)
 
 
+# "26-200-001341 · 24 pcs": a bill line, not a size
+_BILL_LABEL = re.compile(r"^.*·\s*\d+\s*pcs$")
+
+
+def same_item_key(heading: str, label: str) -> tuple[str, str]:
+    """How a supplier's item is recognised again: its name and pack label, ignoring case and
+    spacing. A bill-entry label (bill number and count) says nothing about the item."""
+    label = "" if _BILL_LABEL.match((label or "").strip()) else label
+    norm = lambda t: " ".join((t or "").lower().split())  # noqa: E731
+    return norm(heading), norm(label)
+
+
+async def learn(db: AsyncSession, supplier_id: uuid.UUID) -> int:
+    """Owner 2026-11-26: once we matched a supplier's item, the same item from that supplier
+    (same name and pack label, e.g. on the next bill) gets the same Online product by itself.
+    Returns how many offers were matched this way."""
+    rows = (await db.execute(
+        select(SupplierOffer, SupplierProduct.heading)
+        .join(SupplierProduct, SupplierProduct.product_id == SupplierOffer.product_id)
+        .where(SupplierOffer.supplier_id == supplier_id, SupplierOffer.is_active.is_(True),
+               SupplierProduct.is_active.is_(True)))).all()
+    if not rows:
+        return 0
+    confirmed = {m.offer_id: m for m in (await db.scalars(select(OfferMatch).where(
+        OfferMatch.supplier_id == supplier_id, OfferMatch.status == "confirmed"))).all()}
+    known: dict[tuple[str, str], OfferMatch] = {}
+    for offer, heading in rows:
+        m = confirmed.get(offer.offer_id)
+        if m is not None:
+            known.setdefault(same_item_key(heading, offer.label), m)
+    made = 0
+    for offer, heading in rows:
+        if offer.offer_id in confirmed:
+            continue
+        m = known.get(same_item_key(heading, offer.label))
+        if m is None:
+            continue
+        product = await db.get(OnlineProduct, m.online_product_id)
+        if product is None or not product.is_active:
+            continue
+        await db.execute(delete(OfferMatch).where(OfferMatch.offer_id == offer.offer_id,
+                                                  OfferMatch.status == "suggested"))
+        db.add(OfferMatch(offer_id=offer.offer_id, supplier_id=supplier_id,
+                          online_product_id=m.online_product_id,
+                          online_variant_id=m.online_variant_id, status="confirmed",
+                          decided_by=m.decided_by, decided_at=_now()))
+        await audit.record(db, user_id=m.decided_by, action="match.learned",
+                           entity="supplier_offer", entity_id=offer.offer_id,
+                           after={"online_product_id": str(m.online_product_id),
+                                  "from_offer": str(m.offer_id)})
+        made += 1
+    await db.flush()
+    return made
+
+
 async def suggest(db: AsyncSession, supplier_id: uuid.UUID | None = None) -> dict:
+    learned = 0
+    if supplier_id:
+        learned = await learn(db, supplier_id)
     products = (await db.scalars(
         select(OnlineProduct).where(OnlineProduct.is_active.is_(True)))).all()
     candidates = [_candidate(p) for p in products]
@@ -75,7 +134,7 @@ async def suggest(db: AsyncSession, supplier_id: uuid.UUID | None = None) -> dic
                               score=Decimal(str(s))))
             made += 1
     await db.flush()
-    return {"offers": len(offers), "already_matched": len(confirmed),
+    return {"offers": len(offers), "already_matched": len(confirmed), "learned": learned,
             "with_suggestions": with_any, "suggestions": made,
             "online_products": len(candidates)}
 
@@ -126,6 +185,7 @@ async def confirm(db: AsyncSession, offer_id: uuid.UUID, *, online_product_id: u
                        after={"online_product_id": str(online_product_id),
                               "online_variant_id": str(online_variant_id)
                               if online_variant_id else None})
+    await learn(db, offer.supplier_id)  # the same item elsewhere in their list follows
     return target
 
 
@@ -199,6 +259,6 @@ async def queue(db: AsyncSession, supplier_id: uuid.UUID, *, state: str) -> list
 
 def _product_out(m: OfferMatch, p: OnlineProduct) -> dict:
     return {"online_product_id": p.online_product_id, "online_variant_id": m.online_variant_id,
-            "name": p.name, "name_si": p.name_si, "sku": p.sku,
+            "name": p.name, "name_si": p.name_si, "sku": p.sku, "image_url": p.image_url,
             "size": f"{p.display_size or ''} {p.display_size_unit or ''}".strip() or None,
             "score": m.score}

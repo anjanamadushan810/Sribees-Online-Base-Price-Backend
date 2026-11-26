@@ -23,6 +23,7 @@ class OnlineProductOut(ORM):
     display_size: str | None
     display_size_unit: str | None
     is_active: bool
+    image_url: str | None = None
 
 
 class MatchProductOut(BaseModel):
@@ -33,6 +34,7 @@ class MatchProductOut(BaseModel):
     sku: str | None
     size: str | None
     score: float | None
+    image_url: str | None = None
 
 
 class QueueItemOut(BaseModel):

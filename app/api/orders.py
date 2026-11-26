@@ -29,7 +29,8 @@ router = APIRouter(tags=["orders"])
 # ---------------------------------------------------------------- schemas
 class LineOut(ORM):
     line_id: uuid.UUID
-    offer_id: uuid.UUID
+    offer_id: uuid.UUID | None  # old lines only; lines now name our pack size
+    online_variant_id: uuid.UUID | None = None
     heading: str
     label: str
     boxes: int
@@ -86,12 +87,14 @@ class OrderIn(BaseModel):
 
 
 class LineIn(BaseModel):
-    offer_id: uuid.UUID
-    boxes: int = Field(gt=0, le=100_000)
+    online_variant_id: uuid.UUID  # our pack size (owner 2026-11-26: order in our names)
+    units: int = Field(gt=0, le=1_000_000)
+    unit_price: Money = Field(ge=0)
 
 
-class BoxesIn(BaseModel):
-    boxes: int = Field(ge=0, le=100_000)  # 0 removes the line
+class LinePatchIn(BaseModel):
+    units: int = Field(ge=0, le=1_000_000)  # 0 removes the line
+    unit_price: Money | None = Field(default=None, ge=0)
 
 
 class CancelIn(BaseModel):
@@ -199,16 +202,18 @@ async def get_order(order_id: uuid.UUID, p: Principal = Depends(require("orders.
 @router.post("/orders/{order_id}/lines", response_model=StaffOrderOut)
 async def add_line(order_id: uuid.UUID, body: LineIn, p: Principal = Depends(current_principal),
                    db: AsyncSession = Depends(get_db)):
-    order = await orders.add_line(db, _actor(p), order_id, offer_id=body.offer_id,
-                                  boxes=body.boxes)
+    order = await orders.add_line(db, _actor(p), order_id,
+                                  online_variant_id=body.online_variant_id, units=body.units,
+                                  unit_price=body.unit_price)
     return await _staff_out(db, order)
 
 
 @router.patch("/orders/{order_id}/lines/{line_id}", response_model=StaffOrderOut)
-async def set_boxes(order_id: uuid.UUID, line_id: uuid.UUID, body: BoxesIn,
-                    p: Principal = Depends(current_principal),
-                    db: AsyncSession = Depends(get_db)):
-    order = await orders.set_boxes(db, _actor(p), order_id, line_id, boxes=body.boxes)
+async def set_line(order_id: uuid.UUID, line_id: uuid.UUID, body: LinePatchIn,
+                   p: Principal = Depends(current_principal),
+                   db: AsyncSession = Depends(get_db)):
+    order = await orders.set_line(db, _actor(p), order_id, line_id, units=body.units,
+                                  unit_price=body.unit_price)
     return await _staff_out(db, order)
 
 
@@ -258,7 +263,7 @@ async def product_base_price(online_product_id: uuid.UUID,
     return ProductBasePriceOut(
         online_product_id=online_product_id, name=product.name,
         history=await orders.base_price_history(db, online_product_id),
-        offers=await orders.offers_for_product(db, online_product_id))
+        offers=[])  # supplier price lists are no longer linked to our products (2026-11-26)
 
 
 # ---------------------------------------------------------------- supplier app

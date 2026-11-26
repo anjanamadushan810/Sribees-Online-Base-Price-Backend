@@ -17,7 +17,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from tests.test_orders import new_order, outbox_events, shop  # noqa: F401  (fixture)
+from tests.test_orders import line, new_order, outbox_events, shop  # noqa: F401  (fixture)
 from tests.test_supplier_auth import settings_override
 
 TOKEN = "finance-test-token-" + "x" * 20
@@ -39,10 +39,10 @@ async def _submitted_order(client, purchasing, shop, boxes=2):  # noqa: F811
     o = await new_order(client, purchasing, shop)
     oid = o["order_id"]
     r = await client.post(f"/orders/{oid}/lines", headers=purchasing.headers,
-                          json={"offer_id": shop["soap"], "boxes": boxes})
+                          json=line(shop["soap"], boxes * 150, "125"))
     assert r.status_code == 200, r.text
     r = await client.post(f"/orders/{oid}/lines", headers=purchasing.headers,
-                          json={"offer_id": shop["unmatched"], "boxes": 1})
+                          json=line(shop["coke"], 12, "369"))
     assert r.status_code == 200, r.text
     r = await client.post(f"/orders/{oid}/submit", headers=purchasing.headers)
     assert r.status_code == 200, r.text
@@ -115,38 +115,23 @@ async def test_internal_events_locks(client, owner, purchasing, shop):  # noqa: 
 
 
 async def test_submit_needs_online_branch(client, owner, purchasing, shop):  # noqa: F811
+    from app.core.db import get_sessionmaker
+    from app.models import Branch
+
+    async with get_sessionmaker()() as s, s.begin():
+        (await s.get(Branch, uuid.UUID(shop["branch"]))).online_branch_id = None
     with settings_override(order_approval="finance"):
         o = await new_order(client, purchasing, shop)
         await client.post(f"/orders/{o['order_id']}/lines", headers=purchasing.headers,
-                          json={"offer_id": shop["soap"], "boxes": 1})
+                          json=line(shop["soap"], 150, "125"))
         r = await client.post(f"/orders/{o['order_id']}/submit", headers=purchasing.headers)
         assert r.status_code == 409 and "branch id" in r.json()["detail"]
 
 
-async def _only_variant(product_id) -> str:
-    """Give the mirrored product one pack size (Online's default variant)."""
-    from sqlalchemy import update
-    from sqlalchemy.dialects.postgresql import insert
-
-    from app.core.db import get_sessionmaker
-    from app.models import OnlineVariant
-
-    vid = uuid.uuid5(uuid.NAMESPACE_URL, f"variant-of-{product_id}")
-    async with get_sessionmaker()() as s, s.begin():
-        await s.execute(insert(OnlineVariant).values(
-            online_variant_id=vid, online_product_id=product_id, name="Default",
-            is_active=True).on_conflict_do_nothing())
-        # as a sync does: the product's default pack size goes off once it has a real one
-        await s.execute(update(OnlineVariant).where(OnlineVariant.online_variant_id == product_id)
-                        .values(is_active=False))
-    return str(vid)
-
-
 async def test_finance_sees_the_order(client, owner, purchasing, shop):  # noqa: F811
-    from tests.test_matching import CHERAMY_75
+    from tests.test_online_catalog import CHERAMY_75
 
     online_branch = await _set_online_branch(shop["branch"])
-    soap_variant = await _only_variant(CHERAMY_75)
     with settings_override(order_approval="finance"):
         oid = await _submitted_order(client, owner, shop)
         # the owner cannot approve here: Finance decides
@@ -163,12 +148,10 @@ async def test_finance_sees_the_order(client, owner, purchasing, shop):  # noqa:
     assert p["branch"]["online_branch_id"] == online_branch
     assert p["submitted_by_role"] == "owner" and p["approval_mode"] == "finance"
     assert p["supplier"]["supplier_id"] == shop["supplier_id"]
-    soap = next(ln for ln in p["lines"] if ln["online_product_id"])
+    soap = next(ln for ln in p["lines"] if ln["online_product_id"] == str(CHERAMY_75))
     assert (soap["units"], soap["unit_price"], soap["line_total"]) == (300, "125.00", "37500.00")
-    assert soap["finance_product_id"] == soap_variant  # matched to the product, one pack size
-    unmatched = next(ln for ln in p["lines"] if not ln["online_product_id"])
-    assert unmatched["description"]  # Finance shows it by name until it is matched
-    assert unmatched["finance_product_id"] is None
+    assert soap["finance_product_id"] == shop["soap"]  # our pack size, named on the order
+    assert all(ln["finance_product_id"] for ln in p["lines"])  # every line is our product
     assert Decimal(p["goods_total"]) == sum(Decimal(ln["line_total"]) for ln in p["lines"])
     # paging: after the event's own seq it is gone
     with settings_override(finance_service_token_sha256=TOKEN_SHA):
@@ -262,7 +245,7 @@ async def test_local_mode_unchanged(client, owner, purchasing, shop, approval): 
     with settings_override(order_approval=approval):
         o = await new_order(client, purchasing, shop)
         await client.post(f"/orders/{o['order_id']}/lines", headers=purchasing.headers,
-                          json={"offer_id": shop["soap"], "boxes": 1})
+                          json=line(shop["soap"], 150, "125"))
         await client.post(f"/orders/{o['order_id']}/submit", headers=purchasing.headers)
         r = await client.post(f"/orders/{o['order_id']}/approve", headers=owner.headers)
         assert r.status_code == 200 and r.json()["status"] == "approved"

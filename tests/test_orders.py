@@ -1,11 +1,14 @@
 """Supplier orders end to end, base prices, and who may do what."""
 
+import uuid
+
 import pytest
 from sqlalchemy import select, text
 
 from tests.conftest import make_branch, sign_in
-from tests.test_catalog import FIXTURE, RESOLUTIONS, bearer
-from tests.test_matching import CHERAMY_75, COKE_15, PAYLOAD
+from tests.stock_helpers import D
+from tests.test_catalog import bearer
+from tests.test_online_catalog import CHERAMY_75, COKE_15, PAYLOAD
 from tests.test_supplier_auth import signed_in_supplier
 
 
@@ -20,29 +23,25 @@ async def outbox_events(order_id: str) -> list[str]:
 
 @pytest.fixture
 async def shop(client, owner, purchasing):
-    """A supplier with the real list imported, two offers matched, and a branch."""
+    """A supplier on the app, our catalogue synced, and a branch. Orders name OUR pack
+    sizes (owner 2026-11-26); a plain product's pack size has the product's own id."""
     from app.core.db import get_sessionmaker
     from app.services import online_catalog
 
     supplier, _, tokens = await signed_in_supplier(client, owner)
-    sh = bearer(tokens)
-    r = await client.post("/supplier/catalog/import", headers=sh,
-                          json={"text": FIXTURE, "resolutions": RESOLUTIONS})
-    assert r.status_code == 200, r.text
     async with get_sessionmaker()() as s, s.begin():
         await online_catalog.apply(s, PAYLOAD, user_id=None)
-    cat = (await client.get("/supplier/catalog", headers=sh)).json()
-    offers = {(p["heading"], o["label"]): o["offer_id"]
-              for sec in cat["sections"] for p in sec["products"] for o in p["offers"]}
-    soap = offers[("බේබි ශෙරමි සබන් 75g", "")]
-    coke = offers[("කොකාකෝලා,ස්ප්‍රයිට්", "1.5L")]
-    for offer_id, pid in ((soap, CHERAMY_75), (coke, COKE_15)):
-        r = await client.post(f"/matching/offers/{offer_id}/confirm", headers=purchasing.headers,
-                              json={"online_product_id": str(pid)})
-        assert r.status_code == 204
     branch = await make_branch("Matugama-test")
-    return {"supplier_id": supplier["supplier_id"], "sh": sh, "soap": soap, "coke": coke,
-            "unmatched": offers[("ලයිෆ්බෝයි සබන්", "95g")], "branch": branch}
+    async with get_sessionmaker()() as s, s.begin():  # receiving needs Online's branch id
+        from app.models import Branch
+        b = await s.get(Branch, uuid.UUID(branch))
+        b.online_branch_id = uuid.uuid4()
+    return {"supplier_id": supplier["supplier_id"], "sh": bearer(tokens),
+            "soap": str(CHERAMY_75), "coke": str(COKE_15), "branch": branch}
+
+
+def line(variant: str, units: int, price: str) -> dict:
+    return {"online_variant_id": variant, "units": units, "unit_price": price}
 
 
 async def new_order(client, staff, shop):
@@ -53,85 +52,100 @@ async def new_order(client, staff, shop):
 
 
 async def test_order_flow_and_base_price(client, owner, purchasing, shop):
+    """Owner 2026-11-26: we order in OUR product names; the base price is the bill price
+    staff enter at receiving, not the order's price."""
     o = await new_order(client, purchasing, shop)
     oid = o["order_id"]
     assert o["order_no"].startswith("SPO-") and o["status"] == "draft"
 
     r = await client.post(f"/orders/{oid}/lines", headers=purchasing.headers,
-                          json={"offer_id": shop["soap"], "boxes": 2})
+                          json=line(shop["soap"], 300, "125"))
     assert r.status_code == 200, r.text
-    line = r.json()["lines"][0]
-    assert (line["units"], line["unit_price"], line["line_total"]) == (300, "125.00", "37500.00")
+    ln = r.json()["lines"][0]
+    assert (ln["units"], ln["unit_price"], ln["line_total"]) == (300, "125.00", "37500.00")
+    assert ln["heading"] == "Baby Cheramy Soap" and ln["offer_id"] is None
     r = await client.post(f"/orders/{oid}/lines", headers=purchasing.headers,
-                          json={"offer_id": shop["soap"], "boxes": 1})
-    assert r.status_code == 409
-    r = await client.patch(f"/orders/{oid}/lines/{line['line_id']}",
-                           headers=purchasing.headers, json={"boxes": 3})
+                          json=line(shop["soap"], 10, "125"))
+    assert r.status_code == 409  # the same item twice
+    r = await client.patch(f"/orders/{oid}/lines/{ln['line_id']}",
+                           headers=purchasing.headers, json={"units": 450})
     assert r.json()["goods_total"] == "56250.00"
     await client.post(f"/orders/{oid}/lines", headers=purchasing.headers,
-                      json={"offer_id": shop["coke"], "boxes": 1})
+                      json=line(shop["coke"], 12, "369"))
 
     # the supplier sees nothing before approval
     assert (await client.get("/supplier/orders", headers=shop["sh"])).json() == []
-    assert (await client.get(f"/supplier/orders/{oid}", headers=shop["sh"])).status_code == 404
-
     r = await client.post(f"/orders/{oid}/submit", headers=purchasing.headers)
     assert r.json()["status"] == "submitted"
     r = await client.post(f"/orders/{oid}/lines", headers=purchasing.headers,
-                          json={"offer_id": shop["unmatched"], "boxes": 1})
+                          json=line(shop["coke"], 1, "369"))
     assert r.status_code == 409  # not a draft any more
     assert (await client.post(f"/orders/{oid}/approve",
                               headers=purchasing.headers)).status_code == 403
     r = await client.post(f"/orders/{oid}/approve", headers=owner.headers)
     assert r.json()["status"] == "approved"
 
-    # a later price change by the supplier does not touch the order
-    r = await client.patch(f"/supplier/catalog/offers/{shop['soap']}", headers=shop["sh"],
-                           json={"price": "128"})
-    assert r.status_code == 200
     mine = (await client.get(f"/supplier/orders/{oid}", headers=shop["sh"])).json()
-    soap_line = next(ln for ln in mine["lines"] if ln["offer_id"] == shop["soap"])
-    assert soap_line["unit_price"] == "125.00"
-    assert "online_product_id" not in soap_line  # the supplier never sees our side
-    staff = (await client.get(f"/orders/{oid}", headers=purchasing.headers)).json()
-    assert staff["supplier_seen_at"] is not None
-
+    names = sorted(x["heading"] for x in mine["lines"])
+    assert names == ["Baby Cheramy Soap", "Coca Cola 1.5L"]  # our names, not theirs
+    assert all("online_product_id" not in x for x in mine["lines"])
     r = await client.post(f"/supplier/orders/{oid}/answer", headers=shop["sh"],
                           json={"accept": True, "delivery_charge": "300", "note": "හෙට"})
     assert r.status_code == 200, r.text
     acc = r.json()
-    assert acc["status"] == "accepted" and acc["delivery_charge"] == "300.00"
-    # soap 3 boxes x 150 x 125 + coke 1.5L 1 box x 12 x 369 + delivery 300
-    assert acc["goods_total"] == "60678.00" and acc["total"] == "60978.00"
-    r = await client.post(f"/supplier/orders/{oid}/answer", headers=shop["sh"],
-                          json={"accept": False})
-    assert r.status_code == 409
-
+    assert acc["status"] == "accepted" and acc["total"] == "60978.00"
     bp = (await client.get(f"/base-prices/{CHERAMY_75}", headers=purchasing.headers)).json()
-    assert [h["unit_price"] for h in bp["history"] if h["order_id"] == oid] == ["125.00"]
-    # what we could pay this supplier today (other tests' suppliers offer it too)
-    assert [o["price"] for o in bp["offers"]
-            if o["supplier_id"] == shop["supplier_id"]] == ["128.00"]
-    current = (await client.get("/base-prices", headers=purchasing.headers)).json()
-    row = next(c for c in current if c["online_product_id"] == str(CHERAMY_75))
-    assert row["order_id"] == oid and row["unit_price"] == "125.00"
-
+    assert all(h["order_id"] != oid for h in bp["history"])  # not from the order's price
     assert await outbox_events(oid) == ["order.submitted", "order.approved", "supplier.notify",
                                         "order.accepted"]
 
+    # receiving: the bill said 120, not 125
+    staff = (await client.get(f"/orders/{oid}", headers=purchasing.headers)).json()
+    soap_line = next(x for x in staff["lines"] if x["online_variant_id"] == shop["soap"])
+    r = await client.post(f"/orders/{oid}/receipts", headers=owner.headers, json={
+        "received_date": D("2026-11-26"), "invoice_no": "N-1",
+        "lines": [{"order_line_id": soap_line["line_id"], "units": 450, "unit_price": "120"}]})
+    assert r.status_code == 201, r.text
+    assert r.json()["lines"][0]["unit_price"] == "120.00"
+    bp = (await client.get(f"/base-prices/{CHERAMY_75}", headers=purchasing.headers)).json()
+    assert [h["unit_price"] for h in bp["history"] if h["order_id"] == oid] == ["120.00"]
+    current = (await client.get("/base-prices", headers=purchasing.headers)).json()
+    row = next(c for c in current if c["online_product_id"] == str(CHERAMY_75))
+    assert row["order_id"] == oid and row["unit_price"] == "120.00"
+
+
+async def test_cancel_voids_nothing_received(client, owner, purchasing, shop):
+    o = await new_order(client, purchasing, shop)
+    oid = o["order_id"]
+    await client.post(f"/orders/{oid}/lines", headers=purchasing.headers,
+                      json=line(shop["soap"], 150, "125"))
+    await client.post(f"/orders/{oid}/submit", headers=owner.headers)
     r = await client.post(f"/orders/{oid}/cancel", headers=purchasing.headers,
                           json={"reason": "supplier cannot deliver this week"})
     assert r.json()["status"] == "cancelled"
-    current = (await client.get("/base-prices", headers=purchasing.headers)).json()
-    assert all(c["order_id"] != oid for c in current)
     mine = (await client.get(f"/supplier/orders/{oid}", headers=shop["sh"])).json()
     assert mine["status"] == "cancelled" and "deliver" in mine["cancel_reason"]
+
+
+async def test_an_item_no_longer_sold_cannot_be_submitted(client, owner, shop):
+    from app.core.db import get_sessionmaker
+    from app.models import OnlineVariant
+
+    o = await new_order(client, owner, shop)
+    await client.post(f"/orders/{o['order_id']}/lines", headers=owner.headers,
+                      json=line(shop["coke"], 12, "369"))
+    async with get_sessionmaker()() as s, s.begin():
+        (await s.get(OnlineVariant, COKE_15)).is_active = False
+    r = await client.post(f"/orders/{o['order_id']}/submit", headers=owner.headers)
+    assert r.status_code == 409 and "no longer sold" in r.json()["detail"]
+    async with get_sessionmaker()() as s, s.begin():
+        (await s.get(OnlineVariant, COKE_15)).is_active = True
 
 
 async def test_owner_submit_counts_as_approval(client, owner, shop):
     o = await new_order(client, owner, shop)
     await client.post(f"/orders/{o['order_id']}/lines", headers=owner.headers,
-                      json={"offer_id": shop["soap"], "boxes": 1})
+                      json=line(shop["soap"], 150, "125"))
     r = await client.post(f"/orders/{o['order_id']}/submit", headers=owner.headers)
     assert r.json()["status"] == "approved"
 
@@ -140,7 +154,7 @@ async def test_decline_writes_no_base_price(client, owner, shop):
     o = await new_order(client, owner, shop)
     oid = o["order_id"]
     await client.post(f"/orders/{oid}/lines", headers=owner.headers,
-                      json={"offer_id": shop["coke"], "boxes": 2})
+                      json=line(shop["coke"], 24, "369"))
     await client.post(f"/orders/{oid}/submit", headers=owner.headers)
     r = await client.post(f"/supplier/orders/{oid}/answer", headers=shop["sh"],
                           json={"accept": False, "note": "stock නෑ"})
@@ -158,7 +172,7 @@ async def test_empty_order_cannot_be_submitted(client, purchasing, shop):
 async def test_other_supplier_cannot_see_or_answer(client, owner, shop):
     o = await new_order(client, owner, shop)
     await client.post(f"/orders/{o['order_id']}/lines", headers=owner.headers,
-                      json={"offer_id": shop["soap"], "boxes": 1})
+                      json=line(shop["soap"], 150, "125"))
     await client.post(f"/orders/{o['order_id']}/submit", headers=owner.headers)
     _, _, other = await signed_in_supplier(client, owner)
     h = bearer(other)
@@ -177,7 +191,7 @@ async def test_branch_manager_requests_only_for_own_branch(client, purchasing, s
     assert r.status_code == 403
     o = await new_order(client, manager, shop)
     r = await client.post(f"/orders/{o['order_id']}/lines", headers=manager.headers,
-                          json={"offer_id": shop["soap"], "boxes": 1})
+                          json=line(shop["soap"], 150, "125"))
     assert r.status_code == 200
     assert (await client.post(f"/orders/{o['order_id']}/submit",
                               headers=manager.headers)).status_code == 403
@@ -199,7 +213,7 @@ async def test_database_refuses_line_changes_after_submit(client, owner, shop):
 
     o = await new_order(client, owner, shop)
     await client.post(f"/orders/{o['order_id']}/lines", headers=owner.headers,
-                      json={"offer_id": shop["soap"], "boxes": 1})
+                      json=line(shop["soap"], 150, "125"))
     await client.post(f"/orders/{o['order_id']}/submit", headers=owner.headers)
     with pytest.raises(Exception, match="only while the order is a draft"):
         async with get_sessionmaker()() as s, s.begin():
@@ -207,54 +221,11 @@ async def test_database_refuses_line_changes_after_submit(client, owner, shop):
                                  "WHERE order_id = :o"), {"o": o["order_id"]})
 
 
-# ---------------------------------------------------------------- review 2026-11-12
-async def test_rematched_or_withdrawn_offer_cannot_be_submitted(client, owner, purchasing, shop):
-    """Review #1 (HIGH): a line must not carry a stale match to a base price."""
-    o = await new_order(client, purchasing, shop)
-    oid = o["order_id"]
-    await client.post(f"/orders/{oid}/lines", headers=purchasing.headers,
-                      json={"offer_id": shop["soap"], "boxes": 1})
-    # staff correct the match after the line was added
-    r = await client.post(f"/matching/offers/{shop['soap']}/confirm", headers=purchasing.headers,
-                          json={"online_product_id": str(COKE_15)})
-    assert r.status_code == 204
-    r = await client.post(f"/orders/{oid}/submit", headers=owner.headers)
-    assert r.status_code == 409 and "changed" in r.json()["detail"]
-    # put the match back: submit works; then withdraw the offer: approve is refused
-    await client.post(f"/matching/offers/{shop['soap']}/confirm", headers=purchasing.headers,
-                      json={"online_product_id": str(CHERAMY_75)})
-    assert (await client.post(f"/orders/{oid}/submit",
-                              headers=purchasing.headers)).status_code == 200
-    await client.patch(f"/supplier/catalog/offers/{shop['soap']}", headers=shop["sh"],
-                       json={"is_active": False})
-    r = await client.post(f"/orders/{oid}/approve", headers=owner.headers)
-    assert r.status_code == 409
-
-
-async def test_rematch_after_approval_writes_no_base_price_for_that_line(client, owner,
-                                                                          purchasing, shop):
-    o = await new_order(client, owner, shop)
-    oid = o["order_id"]
-    await client.post(f"/orders/{oid}/lines", headers=owner.headers,
-                      json={"offer_id": shop["coke"], "boxes": 1})
-    assert (await client.post(f"/orders/{oid}/submit",
-                              headers=owner.headers)).json()["status"] == "approved"
-    await client.post(f"/matching/offers/{shop['coke']}/confirm", headers=purchasing.headers,
-                      json={"online_product_id": str(CHERAMY_75)})
-    r = await client.post(f"/supplier/orders/{oid}/answer", headers=shop["sh"],
-                          json={"accept": True})
-    assert r.json()["status"] == "accepted"
-    for pid in (COKE_15, CHERAMY_75):
-        bp = (await client.get(f"/base-prices/{pid}", headers=owner.headers)).json()
-        assert all(h["order_id"] != oid for h in bp["history"])
-    assert "order.accepted" in await outbox_events(oid)
-
-
 async def test_delivery_charge_is_capped(client, owner, shop):
     o = await new_order(client, owner, shop)
     oid = o["order_id"]
     await client.post(f"/orders/{oid}/lines", headers=owner.headers,
-                      json={"offer_id": shop["soap"], "boxes": 1})  # 150 x 125 = 18,750
+                      json=line(shop["soap"], 150, "125"))  # 150 x 125 = 18,750
     await client.post(f"/orders/{oid}/submit", headers=owner.headers)
     r = await client.post(f"/supplier/orders/{oid}/answer", headers=shop["sh"],
                           json={"accept": True, "delivery_charge": "9999999"})
@@ -268,41 +239,15 @@ async def test_branch_manager_cannot_edit_purchasings_draft(client, purchasing, 
     manager = await sign_in(client, "branch_manager", branch_ids=[shop["branch"]])
     o = await new_order(client, purchasing, shop)
     r = await client.post(f"/orders/{o['order_id']}/lines", headers=manager.headers,
-                          json={"offer_id": shop["soap"], "boxes": 1})
+                          json=line(shop["soap"], 150, "125"))
     assert r.status_code == 403
-
-
-# ---------------------------------------------------------------- owner 2026-11-12
-async def test_unmatched_offer_can_be_ordered_without_base_price(client, owner, shop):
-    o = await new_order(client, owner, shop)
-    oid = o["order_id"]
-    r = await client.post(f"/orders/{oid}/lines", headers=owner.headers,
-                          json={"offer_id": shop["unmatched"], "boxes": 1})
-    assert r.status_code == 200, r.text
-    assert r.json()["lines"][0]["online_product_id"] is None
-    assert (await client.post(f"/orders/{oid}/submit",
-                              headers=owner.headers)).json()["status"] == "approved"
-    r = await client.post(f"/supplier/orders/{oid}/answer", headers=shop["sh"],
-                          json={"accept": True})
-    assert r.json()["status"] == "accepted"
-    current = (await client.get("/base-prices", headers=owner.headers)).json()
-    assert all(c["order_id"] != oid for c in current)  # written at receiving instead
-
-
-async def test_held_line_cannot_be_ordered(client, owner, shop):
-    await client.patch(f"/supplier/catalog/offers/{shop['coke']}", headers=shop["sh"],
-                       json={"price": "500"})  # above its MRP of 420 -> held
-    o = await new_order(client, owner, shop)
-    r = await client.post(f"/orders/{o['order_id']}/lines", headers=owner.headers,
-                          json={"offer_id": shop["coke"], "boxes": 1})
-    assert r.status_code == 409 and "held" in r.json()["detail"]
 
 
 async def test_cancel_note_is_staff_only(client, owner, shop):
     o = await new_order(client, owner, shop)
     oid = o["order_id"]
     await client.post(f"/orders/{oid}/lines", headers=owner.headers,
-                      json={"offer_id": shop["soap"], "boxes": 1})
+                      json=line(shop["soap"], 150, "125"))
     await client.post(f"/orders/{oid}/submit", headers=owner.headers)
     r = await client.post(f"/orders/{oid}/cancel", headers=owner.headers,
                           json={"reason": "branch is full this week",

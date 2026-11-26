@@ -27,13 +27,11 @@ from app.core.permissions import SELF_APPROVING_ROLES, has_permission
 from app.models import (
     BasePrice,
     Branch,
-    OfferMatch,
+    OnlineProduct,
     OnlineVariant,
     OutboxEvent,
     Receipt,
     Supplier,
-    SupplierOffer,
-    SupplierProduct,
     SupplyOrder,
     SupplyOrderLine,
 )
@@ -66,32 +64,18 @@ def order_totals(order: SupplyOrder) -> dict:
 MAX_LINE_TOTAL = Decimal("100000000000")  # Rs 100 billion: fits numeric(14,2) with room
 
 
-async def _stale_lines(db: AsyncSession, order: SupplyOrder) -> list[str]:
-    """Lines whose offer, item, price, units or confirmed match changed since they were
-    added (review 2026-11-12 #1: a corrected match must never carry an old line's base
-    price onto the wrong Online product)."""
-    stale = []
-    for ln in order.lines:
-        offer = await db.get(SupplierOffer, ln.offer_id, with_for_update=True)
-        product = await db.get(SupplierProduct, offer.product_id) if offer else None
-        match = await db.scalar(select(OfferMatch).where(
-            OfferMatch.offer_id == ln.offer_id, OfferMatch.status == "confirmed"))
-        match_moved = ln.online_product_id is not None and (
-            match is None or match.online_product_id != ln.online_product_id
-            or match.online_variant_id != ln.online_variant_id)
-        if (offer is None or product is None or not offer.is_active or not product.is_active
-                or offer.held_reason is not None
-                or offer.price != ln.unit_price or offer.units_per_box != ln.units_per_box
-                or match_moved):
-            stale.append(f"{ln.heading} {ln.label}".strip())
-    return stale
-
-
 async def _refuse_stale(db: AsyncSession, order: SupplyOrder) -> None:
-    stale = await _stale_lines(db, order)
-    if stale:
-        raise Conflict("these lines changed since they were added (price, units, match or "
-                       "no longer offered); remove and add them again: " + ", ".join(stale))
+    """Every line must still name an active Online pack size (owner 2026-11-26: orders are
+    in our own product names)."""
+    gone = []
+    for ln in order.lines:
+        variant = (await db.get(OnlineVariant, ln.online_variant_id)
+                   if ln.online_variant_id else None)
+        if variant is None or not variant.is_active:
+            gone.append(f"{ln.heading} {ln.label}".strip())
+    if gone:
+        raise Conflict("these items are no longer sold on SRIBEES Online; remove them: "
+                       + ", ".join(gone))
 
 
 # ---------------------------------------------------------------- staff side
@@ -167,54 +151,53 @@ async def create(db: AsyncSession, actor: StaffActor, *, supplier_id: uuid.UUID,
 
 
 async def add_line(db: AsyncSession, actor: StaffActor, order_id: uuid.UUID, *,
-                   offer_id: uuid.UUID, boxes: int) -> SupplyOrder:
+                   online_variant_id: uuid.UUID, units: int, unit_price: Decimal) -> SupplyOrder:
+    """A line names one of OUR pack sizes (owner 2026-11-26), never the supplier's name for
+    it: what really comes is checked and labelled at receiving."""
     order = await get(db, order_id, actor, lock=True)
     _can_edit(order, actor)
-    if boxes <= 0:
-        raise SupplyError("order at least one box")
-    offer = await db.get(SupplierOffer, offer_id)
-    if offer is None or offer.supplier_id != order.supplier_id:
-        raise NotFound("offer not found for this supplier")
-    product = await db.get(SupplierProduct, offer.product_id)
-    if not offer.is_active or not product.is_active:
-        raise Conflict("the supplier no longer offers this")
-    if offer.units_per_box is None:
-        raise Conflict("units per box is not known for this offer; ask the supplier first")
-    if offer.held_reason is not None:
-        raise Conflict("this price line is held (our price is above the selling price); "
-                       "the supplier must fix it first")
-    # An unmatched offer may be ordered (owner, 2026-11-12); it is matched at receiving,
-    # and its base price is written then.
-    match = await db.scalar(select(OfferMatch).where(OfferMatch.offer_id == offer_id,
-                                                     OfferMatch.status == "confirmed"))
-    if any(ln.offer_id == offer_id for ln in order.lines):
-        raise Conflict("this offer is already on the order; change its boxes instead")
-    if boxes * offer.units_per_box * offer.price > MAX_LINE_TOTAL:
+    if units <= 0:
+        raise SupplyError("order at least one unit")
+    if unit_price < 0:
+        raise SupplyError("the price cannot be below zero")
+    variant = await db.get(OnlineVariant, online_variant_id)
+    product = await db.get(OnlineProduct, variant.online_product_id) if variant else None
+    if variant is None or not variant.is_active or product is None or not product.is_active:
+        raise NotFound("this item is not sold on SRIBEES Online")
+    if any(ln.online_variant_id == online_variant_id for ln in order.lines):
+        raise Conflict("this item is already on the order; change its units instead")
+    if units * unit_price > MAX_LINE_TOTAL:
         raise SupplyError("this line is too large")
+    label = (variant.name if variant.name and variant.name.lower() not in product.name.lower()
+             else "")
     db.add(SupplyOrderLine(
-        order_id=order.order_id, supplier_id=order.supplier_id, offer_id=offer_id,
-        online_product_id=match.online_product_id if match else None,
-        online_variant_id=match.online_variant_id if match else None,
-        heading=product.heading, label=offer.label, boxes=boxes,
-        units_per_box=offer.units_per_box, unit_price=offer.price, mrp=offer.mrp))
+        order_id=order.order_id, supplier_id=order.supplier_id, offer_id=None,
+        online_product_id=product.online_product_id, online_variant_id=online_variant_id,
+        heading=product.name[:200], label=label[:120], boxes=units, units_per_box=1,
+        unit_price=unit_price, mrp=None))
     await db.flush()
     await db.refresh(order, ["lines"])
     return order
 
 
-async def set_boxes(db: AsyncSession, actor: StaffActor, order_id: uuid.UUID,
-                    line_id: uuid.UUID, *, boxes: int) -> SupplyOrder:
+async def set_line(db: AsyncSession, actor: StaffActor, order_id: uuid.UUID,
+                   line_id: uuid.UUID, *, units: int, unit_price: Decimal | None = None
+                   ) -> SupplyOrder:
+    """Change a draft line's units (0 removes it) or price."""
     order = await get(db, order_id, actor, lock=True)
     _can_edit(order, actor)
     line = next((ln for ln in order.lines if ln.line_id == line_id), None)
     if line is None:
         raise NotFound("line not found")
-    if boxes <= 0:
+    if units <= 0:
         await db.delete(line)
     else:
-        if boxes * line.units_per_box * line.unit_price > MAX_LINE_TOTAL:
+        price = line.unit_price if unit_price is None else unit_price
+        if price < 0:
+            raise SupplyError("the price cannot be below zero")
+        if units * line.units_per_box * price > MAX_LINE_TOTAL:
             raise SupplyError("this line is too large")
-        line.boxes = boxes
+        line.boxes, line.unit_price = units, price
     await db.flush()
     await db.refresh(order, ["lines"])
     for ln in order.lines:
@@ -386,22 +369,8 @@ async def answer(db: AsyncSession, supplier_id: uuid.UUID, supplier_user_id: uui
                 raise SupplyError(f"delivery charge can be at most Rs {cap:,.2f} for this "
                                   "order; call Sribees for more")
             order.delivery_charge = delivery_charge
-        for ln in order.lines:
-            # The supplier agreed to the line as approved; but if staff re-matched the offer
-            # since, the line's product is no longer trusted for a base price (review #1).
-            if ln.online_product_id is None:  # unmatched: base price at receiving
-                skipped.append(str(ln.line_id))
-                continue
-            match = await db.scalar(select(OfferMatch).where(
-                OfferMatch.offer_id == ln.offer_id, OfferMatch.status == "confirmed"))
-            if (match is None or match.online_product_id != ln.online_product_id
-                    or match.online_variant_id != ln.online_variant_id):
-                skipped.append(str(ln.line_id))
-                continue
-            db.add(BasePrice(online_product_id=ln.online_product_id,
-                             online_variant_id=ln.online_variant_id, supplier_id=supplier_id,
-                             order_id=order.order_id, line_id=ln.line_id,
-                             unit_price=ln.unit_price, mrp=ln.mrp, recorded_at=now))
+        # The base price is the bill price staff enter at receiving (owner 2026-11-26),
+        # not the price on the order.
     _emit(db, f"order.{order.status}", order,
           delivery_charge=str(order.delivery_charge) if order.delivery_charge is not None
           else None, base_price_skipped_lines=skipped)
@@ -428,22 +397,3 @@ async def base_price_history(db: AsyncSession, online_product_id: uuid.UUID) -> 
     return list((await db.scalars(
         select(BasePrice).where(BasePrice.online_product_id == online_product_id)
         .order_by(BasePrice.recorded_at.desc(), BasePrice.base_price_id.desc()))).all())
-
-
-async def offers_for_product(db: AsyncSession, online_product_id: uuid.UUID) -> list[dict]:
-    """Every active supplier offer confirmed as this Online product, cheapest first:
-    what we could pay today, next to what we last paid."""
-    rows = (await db.execute(
-        select(SupplierOffer, SupplierProduct.heading, Supplier.name, OfferMatch)
-        .join(OfferMatch, (OfferMatch.offer_id == SupplierOffer.offer_id)
-              & (OfferMatch.status == "confirmed"))
-        .join(SupplierProduct, SupplierProduct.product_id == SupplierOffer.product_id)
-        .join(Supplier, Supplier.supplier_id == SupplierOffer.supplier_id)
-        .where(OfferMatch.online_product_id == online_product_id,
-               SupplierOffer.is_active.is_(True), SupplierProduct.is_active.is_(True),
-               Supplier.is_active.is_(True))
-        .order_by(SupplierOffer.price))).all()
-    return [{"offer_id": o.offer_id, "supplier_id": o.supplier_id, "supplier_name": name,
-             "heading": heading, "label": o.label, "price": o.price, "mrp": o.mrp,
-             "units_per_box": o.units_per_box,
-             "online_variant_id": m.online_variant_id} for o, heading, name, m in rows]

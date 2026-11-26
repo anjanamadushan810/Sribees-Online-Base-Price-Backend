@@ -194,6 +194,8 @@ class ReceiptLineIn(BaseModel):
     mrp: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
     product_id: uuid.UUID | None = None
     labels: tuple[str, ...] = Field(default=(), max_length=5000)
+    # the bill's price per unit (owner 2026-11-26); the order's price when left out
+    unit_price: PriceIn | None = None
 
 
 class ReceiptIn(BaseModel):

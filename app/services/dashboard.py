@@ -10,13 +10,12 @@ same tables the pages use, so a card and the list behind it always agree.
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import and_, exists, func, select, text
+from sqlalchemy import and_, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models import (
     BasePrice,
-    OfferMatch,
     OnlineProduct,
     Supplier,
     SupplierOffer,
@@ -81,12 +80,6 @@ async def today(db: AsyncSession, actor: StaffActor) -> dict:
         if actor.can("orders.create"):
             rows.append({"key": "drafts", "route": "/orders?status=draft", "count": await _count(
                 db, order_q(SupplyOrder.status == "draft"))})
-
-    if actor.can("matches.write"):
-        matched = exists().where(OfferMatch.offer_id == SupplierOffer.offer_id,
-                                 OfferMatch.status == "confirmed")
-        q = _active_offers().where(~matched)
-        rows.append({"key": "to_match", "route": "/matching", "count": await _count(db, q)})
 
     if actor.can("suppliers.read"):
         held = (select(SupplierOffer.offer_id).join(
@@ -153,24 +146,25 @@ async def price_changes(db: AsyncSession, days: int = 7, limit: int = 50) -> dic
 
 
 async def base_price_insight(db: AsyncSession, limit: int = 20) -> dict:
-    """For every product we have paid for: what we last paid, and the cheapest offer we
-    could take today (confirmed match, active, not held). `never_ordered` are products with
-    an offer on the table and no base price yet."""
+    """For every product we have paid for: what we last paid, and the cheapest that any
+    supplier last sold it to us for (owner 2026-11-26: supplier price lists are no longer
+    linked to our products, so we compare what we really paid)."""
     limit = max(1, min(limit, 100))
+    per_supplier = (select(BasePrice).where(BasePrice.voided_at.is_(None))
+                    .order_by(BasePrice.online_product_id, BasePrice.online_variant_id,
+                              BasePrice.supplier_id, BasePrice.recorded_at.desc(),
+                              BasePrice.base_price_id.desc())
+                    .distinct(BasePrice.online_product_id, BasePrice.online_variant_id,
+                              BasePrice.supplier_id)).subquery()
     cheapest = (
-        select(
-            OfferMatch.online_product_id.label("pid"),
-            OfferMatch.online_variant_id.label("vid"),
-            SupplierOffer.price.label("price"),
-            SupplierOffer.supplier_id.label("sid"),
-            func.row_number().over(
-                partition_by=(OfferMatch.online_product_id, OfferMatch.online_variant_id),
-                order_by=SupplierOffer.price).label("rn"),
-        )
-        .select_from(SupplierOffer)
-        .join(OfferMatch, and_(OfferMatch.offer_id == SupplierOffer.offer_id,
-                               OfferMatch.status == "confirmed"))
-        .where(SupplierOffer.offer_id.in_(_active_offers()))
+        select(per_supplier.c.online_product_id.label("pid"),
+               per_supplier.c.online_variant_id.label("vid"),
+               per_supplier.c.unit_price.label("price"),
+               per_supplier.c.supplier_id.label("sid"),
+               func.row_number().over(
+                   partition_by=(per_supplier.c.online_product_id,
+                                 per_supplier.c.online_variant_id),
+                   order_by=per_supplier.c.unit_price).label("rn"))
     ).subquery()
     best = select(cheapest).where(cheapest.c.rn == 1).subquery()
 
@@ -201,12 +195,7 @@ async def base_price_insight(db: AsyncSession, limit: int = 20) -> dict:
         })
     can_save = sorted((i for i in items if Decimal(i["saving"]) > 0),
                       key=lambda i: i["saving_pct"], reverse=True)
-    paid = select(latest.c.online_product_id)
-    never = (select(OnlineProduct.online_product_id, OnlineProduct.name)
-             .where(OnlineProduct.online_product_id.in_(select(best.c.pid)),
-                    OnlineProduct.online_product_id.notin_(paid))
-             .order_by(OnlineProduct.name))
-    never_rows = (await db.execute(never)).all()
+    never_rows: list = []
     return {"products_compared": len(items), "can_save": can_save[:limit],
             "can_save_count": len(can_save),
             "never_ordered_count": len(never_rows),

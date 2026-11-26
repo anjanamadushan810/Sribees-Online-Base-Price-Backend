@@ -13,7 +13,7 @@ from app.api import (
     dashboard,
     finance_internal,
     labels,
-    matching,
+    online_catalog,
     online_internal,
     orders,
     quick_buy,
@@ -85,7 +85,7 @@ def create_app() -> FastAPI:
     app.include_router(admin.router)
     app.include_router(supplier_auth.router)
     app.include_router(catalog.router)
-    app.include_router(matching.router)
+    app.include_router(online_catalog.router)
     app.include_router(orders.router)
     app.include_router(dashboard.router)
     app.include_router(finance_internal.router)

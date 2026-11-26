@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy import func, select
 
 from tests.test_catalog import bearer
-from tests.test_orders import new_order, shop  # noqa: F401  (fixture)
+from tests.test_orders import line, new_order, shop  # noqa: F401  (fixture)
 from tests.test_supplier_auth import settings_override, signed_in_supplier
 
 _KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -93,7 +93,7 @@ async def test_alerts_reach_only_the_suppliers_phones(client, owner, purchasing,
     with settings_override(order_approval="local"):
         o = await new_order(client, purchasing, shop)
         await client.post(f"/orders/{o['order_id']}/lines", headers=purchasing.headers,
-                          json={"offer_id": shop["soap"], "boxes": 1})
+                          json=line(shop["soap"], 150, "125"))
         await client.post(f"/orders/{o['order_id']}/submit", headers=purchasing.headers)
         r = await client.post(f"/orders/{o['order_id']}/approve", headers=owner.headers)
         assert r.json()["status"] == "approved"

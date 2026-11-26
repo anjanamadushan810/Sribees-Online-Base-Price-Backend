@@ -375,7 +375,7 @@ class SupplyOrderLine(Base):
     order_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("supply_orders.order_id"))
     supplier_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
-    offer_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    offer_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))  # old lines only
     online_product_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     online_variant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     heading: Mapped[str] = mapped_column(String(200))

@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import select
 
 from app.services.errors import SupplyError
-from tests.test_matching import PAYLOAD
+from tests.test_online_catalog import PAYLOAD
 
 pytestmark = pytest.mark.usefixtures("database")
 

@@ -7,27 +7,22 @@ order, after the fact); and receives the goods at once with their labels, expiry
 bill's number and total. Finance then matches the bill (receipt.posted) and the accountant
 records the cash payment there.
 
-Each line becomes an offer in the supplier's "Quick buys" section (an order line names an
-offer); the shop has no app, so nobody else sees that list.
+Each line names one of OUR pack sizes (owner 2026-11-26: we order and receive in our own
+product names; what the shop's bill calls it does not matter). Its price is the base price.
 """
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
-    BasePrice,
-    OfferMatch,
     OnlineProduct,
     OnlineVariant,
     Supplier,
-    SupplierOffer,
-    SupplierProduct,
-    SupplierSection,
     SupplyOrderLine,
 )
 from app.services import orders, receiving
@@ -69,34 +64,6 @@ async def search_items(db: AsyncSession, q: str, limit: int = 30) -> list[dict]:
              "weight_grams": v.weight_grams, "image_url": p.image_url} for v, p in rows]
 
 
-async def _section(db: AsyncSession, supplier_id: uuid.UUID) -> SupplierSection:
-    section = await db.scalar(select(SupplierSection).where(
-        SupplierSection.supplier_id == supplier_id,
-        func.lower(SupplierSection.title) == SECTION.lower()))
-    if section is None:
-        section = SupplierSection(supplier_id=supplier_id, title=SECTION)
-        db.add(section)
-        await db.flush()
-    return section
-
-
-async def _offer(db: AsyncSession, supplier_id: uuid.UUID, section: SupplierSection,
-                 heading: str, label: str, price: Decimal, mrp: Decimal | None) -> SupplierOffer:
-    product = await db.scalar(select(SupplierProduct).where(
-        SupplierProduct.supplier_id == supplier_id,
-        SupplierProduct.section_id == section.section_id, SupplierProduct.heading == heading))
-    if product is None:
-        product = SupplierProduct(supplier_id=supplier_id, section_id=section.section_id,
-                                  heading=heading)
-        db.add(product)
-        await db.flush()
-    offer = SupplierOffer(supplier_id=supplier_id, product_id=product.product_id, label=label,
-                          price=price, mrp=mrp, units_per_box=1)
-    db.add(offer)
-    await db.flush()
-    return offer
-
-
 async def quick_buy(db: AsyncSession, staff: orders.StaffActor, actor: Actor, *,
                     supplier_id: uuid.UUID, branch_id: uuid.UUID, received_date: date,
                     bill_no: str | None, bill_total: Decimal | None, notes: str | None,
@@ -119,36 +86,17 @@ async def quick_buy(db: AsyncSession, staff: orders.StaffActor, actor: Actor, *,
     order = await orders.create(db, staff, supplier_id=supplier_id, branch_id=branch_id,
                                 note=("Quick buy" + (f": {notes}" if notes else ""))[:2000])
     order.is_quick_buy = True
-    section = await _section(db, supplier_id)
     line_of: dict[uuid.UUID, SupplyOrderLine] = {}
     for n, ln in enumerate(lines, start=1):
-        variant = await db.get(OnlineVariant, ln.online_variant_id)
-        if variant is None or not variant.is_active:
-            raise SupplyError(f"item {n} is not an Online pack size; sync the catalogue")
-        product = await db.get(OnlineProduct, variant.online_product_id)
         if not (0 < ln.units <= receiving.MAX_UNITS) or ln.unit_price < 0:
-            raise SupplyError(f"{product.name}: units above zero and a price, please")
-        heading = product.name[:200]
-        offer = await _offer(db, supplier_id, section, heading, (variant.name or "")[:120],
-                             ln.unit_price, ln.mrp)
-        # staff chose the Online pack size themselves: the match is confirmed by them
-        db.add(OfferMatch(offer_id=offer.offer_id, supplier_id=supplier_id,
-                          online_product_id=product.online_product_id,
-                          online_variant_id=variant.online_variant_id, status="confirmed",
-                          decided_by=staff.user_id, decided_at=datetime.now(UTC)))
-        row = SupplyOrderLine(order_id=order.order_id, supplier_id=supplier_id,
-                              offer_id=offer.offer_id, online_product_id=product.online_product_id,
-                              online_variant_id=variant.online_variant_id, heading=heading,
-                              label=offer.label, boxes=ln.units, units_per_box=1,
-                              unit_price=ln.unit_price, mrp=ln.mrp)
-        db.add(row)
-        await db.flush()
+            raise SupplyError(f"item {n}: units above zero and a price, please")
+        # our own pack size, never the shop's name for it (owner 2026-11-26)
+        order = await orders.add_line(db, staff, order.order_id,
+                                      online_variant_id=ln.online_variant_id, units=ln.units,
+                                      unit_price=ln.unit_price)
+        row = next(x for x in order.lines if x.online_variant_id == ln.online_variant_id)
+        row.mrp = ln.mrp
         line_of[ln.online_variant_id] = row
-        # base price = the price we actually paid (round 2); a quick buy is a real buy
-        db.add(BasePrice(online_product_id=product.online_product_id,
-                         online_variant_id=variant.online_variant_id, supplier_id=supplier_id,
-                         order_id=order.order_id, line_id=row.line_id,
-                         unit_price=ln.unit_price, mrp=ln.mrp))
     await db.refresh(order, ["lines"])
     await orders.submit(db, staff, order.order_id)  # Finance's PO + approval, as usual
     order.approved_by_name = order.approved_by_name or "Quick buy (paid at the market)"

@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    BasePrice,
     Branch,
     OnlineProduct,
     OnlineVariant,
@@ -53,6 +54,9 @@ class ReceiptLineIn:
     mrp: Decimal | None = None
     product_id: uuid.UUID | None = None
     labels: tuple[str, ...] = ()  # QR label numbers stuck on these units (phase C)
+    # the bill's price per unit (owner 2026-11-26): staff enter it at receiving; the order's
+    # price is the default. It is the item's base price.
+    unit_price: Decimal | None = None
 
 
 # ---------------------------------------------------------------- landed cost (B2)
@@ -247,7 +251,10 @@ async def receive(
             raise SupplyError(f"{product.name}: the expiry is not after the manufacture date")
         if ln.mfg_date and ln.mfg_date > received_date:
             raise SupplyError(f"{product.name}: made after it arrived?")
-        value = stock.money(Decimal(ln.units) * ol.unit_price)
+        price = ol.unit_price if ln.unit_price is None else ln.unit_price
+        if price < 0:
+            raise SupplyError(f"{product.name}: the price cannot be below zero")
+        value = stock.money(Decimal(ln.units) * price)
         landed = shares.get(n - 1, ZERO)
         batch = await stock.create_batch(
             db, batch_no=f"{receipt.receipt_no}-{n}", branch_id=order.branch_id,
@@ -255,12 +262,13 @@ async def receive(
             expiry_date=ln.expiry_date, qty=qty, value=value + landed)
         row = ReceiptLine(receipt_id=receipt.receipt_id, line_no=n, order_line_id=ol.line_id,
                           product_id=product.product_id, units=ln.units,
-                          free_units=ln.free_units, qty=qty, unit_price=ol.unit_price,
+                          free_units=ln.free_units, qty=qty, unit_price=price,
                           line_value=value, expiry_date=ln.expiry_date, mfg_date=ln.mfg_date,
                           mrp=ln.mrp, batch_id=batch.batch_id, landed_cost=landed)
         db.add(row)
         got[ol.line_id] = got.get(ol.line_id, 0) + ln.units
         received.append((row, batch))
+        await _base_price(db, order, ol, item, price, ln.mrp or ol.mrp)
         if ln.labels:
             to_label.append((batch, ln.labels))
         total += value + landed
@@ -302,6 +310,17 @@ async def receive(
                        ip_address=actor.ip_address)
     await db.refresh(receipt, ["lines"])
     return receipt
+
+
+async def _base_price(db: AsyncSession, order: SupplyOrder, ol: SupplyOrderLine,
+                      variant_id: uuid.UUID, price: Decimal, mrp: Decimal | None) -> None:
+    """Base price = the price we really paid, as on the bill (owner 2026-11-26)."""
+    variant = await db.get(OnlineVariant, variant_id)
+    if variant is None:
+        return
+    db.add(BasePrice(online_product_id=variant.online_product_id, online_variant_id=variant_id,
+                     supplier_id=order.supplier_id, order_id=order.order_id,
+                     line_id=ol.line_id, unit_price=price, mrp=mrp))
 
 
 def _emit_receipt(db, order, receipt, received, journal, *, ordered: int, outstanding: int,

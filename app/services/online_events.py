@@ -24,6 +24,7 @@ from app.services import picks
 
 log = logging.getLogger("supply.online_events")
 KEY = "online_events"
+_last_missing = 0.0  # when we last said Online has no /internal/supply/events yet
 
 
 def enabled() -> bool:
@@ -64,6 +65,16 @@ async def run_once(sessionmaker: async_sessionmaker, client: httpx.AsyncClient,
                          params={"after": after, "limit": limit},
                          headers={"Authorization": f"Bearer {s.online_service_token}"},
                          timeout=20)
+    if r.status_code == 404:
+        # Online does not serve the pack-scan events yet (its release comes later): say so
+        # once an hour instead of a traceback every round.
+        global _last_missing
+        import time
+
+        if time.monotonic() - _last_missing > 3600:
+            _last_missing = time.monotonic()
+            log.warning("Online has no /internal/supply/events yet; pack-scan holds wait")
+        return {}
     r.raise_for_status()
     body = r.json()
     if body.get("enabled") is False:

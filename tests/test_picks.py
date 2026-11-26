@@ -335,3 +335,16 @@ async def test_worker_waits_at_a_hole_and_never_stalls(client, owner, branch, mo
         assert int((await s.get(SyncState, "online_events")).value["seq"]) == start + 3
         failure = await s.get(OnlineEventFailure, start + 2)
         assert failure is not None and "short" in failure.error
+
+
+
+async def test_worker_is_quiet_while_online_has_no_events_route():
+    import httpx
+
+    from app.core.db import get_sessionmaker
+    from app.services import online_events
+
+    with settings_override(online_api_url="http://online.test", online_service_token="x"):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda r: httpx.Response(404, json={"detail": "Not Found"}))) as http:
+            assert await online_events.run_once(get_sessionmaker(), http) == {}

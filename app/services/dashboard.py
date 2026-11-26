@@ -81,6 +81,9 @@ async def today(db: AsyncSession, actor: StaffActor) -> dict:
             rows.append({"key": "drafts", "route": "/orders?status=draft", "count": await _count(
                 db, order_q(SupplyOrder.status == "draft"))})
 
+    if actor.can("base_prices.read"):
+        rows.append({"key": "price_jumps", "route": "/", "count": await price_jumps(db)})
+
     if actor.can("suppliers.read"):
         held = (select(SupplierOffer.offer_id).join(
             Supplier, Supplier.supplier_id == SupplierOffer.supplier_id)
@@ -117,29 +120,51 @@ async def orders_summary(db: AsyncSession, actor: StaffActor) -> dict:
     return {"stages": stages, "week_orders": int(n), "week_value": f"{Decimal(value):.2f}"}
 
 
+JUMP = Decimal("1.10")  # a bill price more than 10% above the last one is flagged (owner)
+
+_BILL_MOVES = """
+    WITH h AS (
+        SELECT b.base_price_id, b.online_product_id, b.online_variant_id, b.supplier_id,
+               b.unit_price, b.recorded_at,
+               lag(b.unit_price) OVER (PARTITION BY b.online_variant_id
+                                       ORDER BY b.recorded_at, b.base_price_id) AS prev
+          FROM base_prices b
+         WHERE b.voided_at IS NULL
+    )
+    SELECT h.base_price_id, h.supplier_id, s.name AS supplier_name, p.name AS heading,
+           COALESCE(v.name, '') AS label, h.prev AS old_price, h.unit_price AS new_price,
+           h.recorded_at AS changed_at
+      FROM h
+      JOIN suppliers s ON s.supplier_id = h.supplier_id
+      JOIN online_products p ON p.online_product_id = h.online_product_id
+      LEFT JOIN online_variants v ON v.online_variant_id = h.online_variant_id
+     WHERE h.recorded_at >= :since AND h.prev IS NOT NULL AND h.unit_price <> h.prev
+"""
+
+
+async def price_jumps(db: AsyncSession, days: int = 7) -> int:
+    """Bill prices more than 10% above the last price paid for the same item."""
+    since = _now() - timedelta(days=days)
+    return int(await db.scalar(text(
+        # a fixed query of our own; every value is a bound parameter
+        f"SELECT count(*) FROM ({_BILL_MOVES}) m WHERE m.new_price > m.old_price * :jump"),  # noqa: S608
+        {"since": since, "jump": JUMP}) or 0)
+
+
 async def price_changes(db: AsyncSession, days: int = 7, limit: int = 50) -> dict:
-    """Supplier price lines whose price moved in the last `days` days, newest first."""
+    """What we paid that moved in the last `days` days, newest first (owner 2026-11-26: the
+    bill prices staff enter at receiving; supplier price lists are no longer linked)."""
     days = max(1, min(days, 90))
     limit = max(1, min(limit, 200))
     since = _now() - timedelta(days=days)
-    rows = (await db.execute(text("""
-        WITH h AS (
-            SELECT history_id, offer_id, supplier_id, price, changed_at,
-                   lag(price) OVER (PARTITION BY offer_id ORDER BY changed_at, history_id) AS prev
-              FROM supplier_offer_prices
-        )
-        SELECT h.offer_id, h.supplier_id, s.name AS supplier_name, p.heading, o.label,
-               h.prev AS old_price, h.price AS new_price, h.changed_at
-          FROM h
-          JOIN supplier_offers o ON o.offer_id = h.offer_id
-          JOIN supplier_products p ON p.product_id = o.product_id
-          JOIN suppliers s ON s.supplier_id = h.supplier_id
-         WHERE h.changed_at >= :since AND h.prev IS NOT NULL AND h.price <> h.prev
-         ORDER BY h.changed_at DESC, h.history_id DESC
-         LIMIT :limit
-    """), {"since": since, "limit": limit})).mappings().all()
-    items = [{**dict(r), "offer_id": str(r["offer_id"]), "supplier_id": str(r["supplier_id"]),
+    rows = (await db.execute(text(
+        _BILL_MOVES + " ORDER BY h.recorded_at DESC, h.base_price_id DESC LIMIT :limit"),
+        {"since": since, "limit": limit})).mappings().all()
+    items = [{"id": str(r["base_price_id"]), "supplier_id": str(r["supplier_id"]),
+              "supplier_name": r["supplier_name"], "heading": r["heading"],
+              "label": r["label"] if r["label"].lower() not in r["heading"].lower() else "",
               "old_price": f"{r['old_price']:.2f}", "new_price": f"{r['new_price']:.2f}",
+              "jump": r["new_price"] > r["old_price"] * JUMP,
               "changed_at": r["changed_at"]} for r in rows]
     up = sum(1 for r in rows if r["new_price"] > r["old_price"])
     return {"days": days, "items": items, "increases": up, "decreases": len(rows) - up}

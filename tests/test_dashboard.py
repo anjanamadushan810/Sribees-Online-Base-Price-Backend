@@ -103,3 +103,20 @@ async def test_base_price_insight_finds_a_saving(client, owner, branch, shop):  
     item = next(i for i in body["can_save"] if i["online_product_id"] == str(CHERAMY_75))
     assert (item["base_price"], item["best_price"], item["saving"]) == ("125.00", "100.00", "25.00")
     assert item["saving_pct"] == 20.0 and item["best_supplier"] == cheap["name"]
+
+
+async def test_a_bill_price_jump_is_flagged(client, owner, branch, shop):  # noqa: F811
+    """Owner 2026-11-26: a bill price more than 10% above the last one is shown to the owner."""
+    sup = await fresh_supplier(client, owner)
+    before = row(await today(client, owner), "price_jumps")["count"]
+    for day, price in ((D("2026-11-20"), "100.00"), (D("2026-11-25"), "115.00")):
+        r = await client.post("/quick-buys", headers=owner.headers, json={
+            "supplier_id": sup["supplier_id"], "branch_id": str(branch), "received_date": day,
+            "lines": [{"online_variant_id": shop["coke"], "units": 5, "unit_price": price}]})
+        assert r.status_code == 201, r.text
+    assert row(await today(client, owner), "price_jumps")["count"] == before + 1
+    body = (await client.get("/dashboard/price-changes", headers=owner.headers,
+                             params={"days": 7})).json()
+    mine = [i for i in body["items"] if i["supplier_id"] == sup["supplier_id"]]
+    assert [(i["old_price"], i["new_price"], i["jump"]) for i in mine] == [
+        ("100.00", "115.00", True)]

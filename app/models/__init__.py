@@ -361,6 +361,7 @@ class SupplyOrder(Base):
     rest_closed_reason: Mapped[str | None] = mapped_column(Text)
     rest_closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     rest_closed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    is_quick_buy: Mapped[bool] = mapped_column(Boolean, default=False)  # 0017
 
     lines: Mapped[list["SupplyOrderLine"]] = relationship(
         lazy="selectin", order_by="SupplyOrderLine.heading", cascade="all, delete-orphan")

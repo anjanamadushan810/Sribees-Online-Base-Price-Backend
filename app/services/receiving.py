@@ -132,7 +132,8 @@ async def receive(
 ) -> Receipt:
     order = await _order(db, actor, order_id, scope)
     supplier = await db.get(Supplier, order.supplier_id)
-    if order.status not in RECEIVABLE:
+    quick = order.is_quick_buy and order.status == "submitted"  # goods already in hand
+    if order.status not in RECEIVABLE and not quick:
         raise Conflict(f"order {order.order_no} is {order.status}; goods are received against "
                        "an order the supplier accepted")
     if order.status == "approved" and any(u.is_active for u in supplier.users):

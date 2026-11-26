@@ -55,6 +55,36 @@ class ReceiptLineIn:
     labels: tuple[str, ...] = ()  # QR label numbers stuck on these units (phase C)
 
 
+# ---------------------------------------------------------------- landed cost (B2)
+async def _landed_shares(db: AsyncSession, order: SupplyOrder, order_lines: dict, got: dict,
+                         lines: list) -> dict[int, Decimal]:
+    """The supplier's delivery charge spread over this receipt's lines by value (index ->
+    rupees). The receipt that completes the order takes what rounding left over, so all
+    receipts together carry exactly the charge."""
+    charge = order.delivery_charge or ZERO
+    goods = sum((ol.units * ol.unit_price for ol in order_lines.values()), ZERO)
+    if charge <= 0 or goods <= 0:
+        return {}
+    values = {}
+    for i, ln in enumerate(lines):
+        ol = order_lines.get(ln.order_line_id)
+        if ol is not None and ln.units > 0:
+            values[i] = Decimal(ln.units) * ol.unit_price
+    shares = {i: stock.money(charge * v / goods) for i, v in values.items()}
+    after = dict(got)
+    for ln in lines:
+        after[ln.order_line_id] = after.get(ln.order_line_id, 0) + ln.units
+    completes = all(after.get(ol.line_id, 0) >= ol.units for ol in order_lines.values())
+    if completes and shares:
+        before = await db.scalar(select(func.coalesce(func.sum(ReceiptLine.landed_cost), 0))
+                                 .join(Receipt, Receipt.receipt_id == ReceiptLine.receipt_id)
+                                 .where(Receipt.order_id == order.order_id)) or ZERO
+        left = charge - before - sum(shares.values(), ZERO)
+        big = max(shares, key=lambda i: values[i])
+        shares[big] = max(ZERO, shares[big] + left)
+    return shares
+
+
 # ---------------------------------------------------------------- stock products
 async def stock_item_for(db: AsyncSession, line: SupplyOrderLine) -> uuid.UUID | None:
     """The stock product of an order line: its pack size (Online variant), or the only
@@ -164,6 +194,7 @@ async def receive(
     db.add(receipt)
     await db.flush()
 
+    shares = await _landed_shares(db, order, order_lines, got, lines)
     total = ZERO
     labels_required = await labels.required(db)
     received: list[tuple[ReceiptLine, object]] = []
@@ -212,21 +243,22 @@ async def receive(
         if ln.mfg_date and ln.mfg_date > received_date:
             raise SupplyError(f"{product.name}: made after it arrived?")
         value = stock.money(Decimal(ln.units) * ol.unit_price)
+        landed = shares.get(n - 1, ZERO)
         batch = await stock.create_batch(
             db, batch_no=f"{receipt.receipt_no}-{n}", branch_id=order.branch_id,
             product=product, supplier_id=order.supplier_id, received_date=received_date,
-            expiry_date=ln.expiry_date, qty=qty, value=value)
+            expiry_date=ln.expiry_date, qty=qty, value=value + landed)
         row = ReceiptLine(receipt_id=receipt.receipt_id, line_no=n, order_line_id=ol.line_id,
                           product_id=product.product_id, units=ln.units,
                           free_units=ln.free_units, qty=qty, unit_price=ol.unit_price,
                           line_value=value, expiry_date=ln.expiry_date, mfg_date=ln.mfg_date,
-                          mrp=ln.mrp, batch_id=batch.batch_id)
+                          mrp=ln.mrp, batch_id=batch.batch_id, landed_cost=landed)
         db.add(row)
         got[ol.line_id] = got.get(ol.line_id, 0) + ln.units
         received.append((row, batch))
         if ln.labels:
             to_label.append((batch, ln.labels))
-        total += value
+        total += value + landed
     receipt.total = total
     await db.flush()
 
@@ -242,7 +274,8 @@ async def receive(
             user_id=actor.user_id)
         receipt.journal_id = journal.journal_id
     for row, batch in received:
-        await stock.move(db, batch=batch, move_type="grn", qty=row.qty, value=row.line_value,
+        await stock.move(db, batch=batch, move_type="grn", qty=row.qty,
+                         value=row.line_value + row.landed_cost,
                          move_date=received_date, doc_type="receipt", doc_id=receipt.receipt_id,
                          user_id=actor.user_id,
                          journal_id=journal.journal_id if journal else None)
@@ -286,6 +319,7 @@ def _emit_receipt(db, order, receipt, received, journal, *, ordered: int, outsta
         "lines": [{"order_line_id": str(r.order_line_id), "product_id": str(r.product_id),
                    "units": r.units, "free_units": r.free_units, "qty": str(r.qty),
                    "unit_price": str(r.unit_price), "line_value": str(r.line_value),
+                   "landed_cost": str(r.landed_cost),
                    "batch_no": b.batch_no,
                    "expiry_date": r.expiry_date.isoformat() if r.expiry_date else None}
                   for r, b in received]}))

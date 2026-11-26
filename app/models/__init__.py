@@ -760,6 +760,7 @@ class ReceiptLine(Base):
     mrp: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     batch_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("stock_batches.batch_id"))
+    landed_cost: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))  # 0018
 
 
 class FinancePeriod(Base):

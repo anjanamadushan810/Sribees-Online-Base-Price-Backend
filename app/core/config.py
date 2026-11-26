@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     online_sync_hours: int = 6
     # Bearer token for Online's /internal/supply/* routes (Online keeps only its SHA-256).
     online_service_token: str = ""
+    # Add received goods to the shop's stock (POST /internal/supply/receipts; Online must
+    # have SUPPLY_STOCK_IN_ENABLED). Receipts saved while this is off are never sent.
+    online_stock_in: bool = False
     # Pack scan (phase E): SHA-256 of the token Online presents on /internal/online/*
     # (empty = 404), the peers it may come from, and how often the worker reads Online's
     # order events (delivered / cancelled / returned) from /internal/supply/events.

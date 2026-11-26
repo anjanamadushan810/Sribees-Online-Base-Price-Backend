@@ -200,6 +200,7 @@ async def receive_goods(
     receipt = await receiving.receive(
         db, _actor(p, request), order_id, received_date=body.received_date,
         invoice_no=body.invoice_no, invoice_total=body.invoice_total, notes=body.notes,
+        transport_charge=body.transport_charge,
         lines=[receiving.ReceiptLineIn(**ln.model_dump()) for ln in body.lines],
         scope=scoped_branches(p, None))
     names = await _names(db, Product, Product.product_id, [ln.product_id for ln in receipt.lines])

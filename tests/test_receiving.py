@@ -1,5 +1,5 @@
-"""Receiving against a supply order (phase B; replaces Finance's GRN): back-orders,
-landed cost, the journal Finance is asked to post, and who may receive."""
+"""Receiving against a supply order (phase B; replaces Finance's GRN): short deliveries,
+the transport charge, the journal Finance is asked to post, and who may receive."""
 
 import json
 import os
@@ -35,7 +35,7 @@ async def _events(order_id: str, kind: str) -> list[dict]:
         return [r.payload for r in rows if r.payload.get("order_id") == order_id]
 
 
-async def test_short_delivery_is_a_back_order(client, owner, branch):
+async def test_a_short_delivery_closes_the_order(client, owner, branch):
     supplier = await fresh_supplier(client, owner)
     jam = await new_product(client, owner, name="Jam")
     tea = await new_product(client, owner, track_expiry=True, name="Tea")
@@ -44,7 +44,13 @@ async def test_short_delivery_is_a_back_order(client, owner, branch):
     inventory = await balance(client, owner, "1300", branch)
     grni = await balance(client, owner, "2020", branch)
 
-    # 8 of 10 jars and 2 free, no tea yet; the invoice comes with the goods
+    # more than was ordered is refused; tea needs its expiry
+    r = await receive(client, owner, oid, [{"order_line_id": jam_line, "units": 11}])
+    assert r.status_code == 422 and "only 10 of 10" in r.json()["detail"]
+    r = await receive(client, owner, oid, [{"order_line_id": tea_line, "units": 5}])
+    assert r.status_code == 422 and "expiry" in r.json()["detail"]
+
+    # 8 of 10 jars and 2 free, no tea; the invoice comes with the goods
     r = await receive(client, owner, oid, [
         {"order_line_id": jam_line, "units": 8, "free_units": 2}],
         invoice_no="INV-77", invoice_total="800.00")
@@ -54,8 +60,11 @@ async def test_short_delivery_is_a_back_order(client, owner, branch):
     line = first["lines"][0]
     assert (line["units"], line["free_units"], line["qty"], line["line_value"]) == (
         8, 2, "10", "800.00")
+    # owner 2026-11-26: what did not come is ordered again; this order is finished
     order = (await client.get(f"/orders/{oid}", headers=owner.headers)).json()
-    assert order["status"] == "approved"  # still open for the rest
+    assert order["status"] == "received"
+    posted = (await _events(oid, "receipt.posted"))[0]
+    assert (posted["order_status"], posted["outstanding_units"]) == ("received", 7)
 
     # landed cost: Rs 800 over 10 jars (8 paid + 2 free)
     batches = (await client.get("/stock/batches", headers=owner.headers,
@@ -64,32 +73,9 @@ async def test_short_delivery_is_a_back_order(client, owner, branch):
     assert await balance(client, owner, "1300", branch) - inventory == Decimal("800.00")
     assert await balance(client, owner, "2020", branch) - grni == Decimal("-800.00")
 
-    # more than is still due is refused; tea needs its expiry
-    r = await receive(client, owner, oid, [{"order_line_id": jam_line, "units": 3}])
-    assert r.status_code == 422 and "only 2 of 10" in r.json()["detail"]
-    r = await receive(client, owner, oid, [{"order_line_id": tea_line, "units": 5}])
-    assert r.status_code == 422 and "expiry" in r.json()["detail"]
-
-    r = await receive(client, owner, oid, [
-        {"order_line_id": jam_line, "units": 2},
-        {"order_line_id": tea_line, "units": 5, "expiry_date": "2027-06-30",
-         "mfg_date": D("2026-09-01"), "mrp": "520.00"}], day=D("2026-10-04"))
-    assert r.status_code == 201, r.text
-    assert (await client.get(f"/orders/{oid}", headers=owner.headers)).json()["status"] == \
-        "received"
-    r = await receive(client, owner, oid, [{"order_line_id": jam_line, "units": 1}])
+    r = await receive(client, owner, oid, [{"order_line_id": tea_line, "units": 5,
+                                            "expiry_date": "2027-06-30"}])
     assert r.status_code == 409
-
-    posted = await _events(oid, "receipt.posted")
-    assert [(e["outstanding_units"], e["order_status"]) for e in posted] == [
-        (7, "approved"), (0, "received")]
-    assert posted[0]["invoice_no"] == "INV-77" and posted[0]["invoice_total"] == "800.00"
-    assert posted[1]["total"] == "2450.00"  # 2 x 100 + 5 x 450
-    notes = await _events(oid, "supplier.notify")
-    assert [(n["kind"], n["received_units"], n["ordered_units"]) for n in notes] == [
-        ("received", 8, 15), ("received", 15, 15)]
-    receipts = (await client.get(f"/orders/{oid}/receipts", headers=owner.headers)).json()
-    assert [r["total"] for r in receipts] == ["800.00", "2450.00"]
 
 
 async def test_journal_request_is_balanced_and_names_the_online_branch(client, owner, branch):
@@ -129,7 +115,7 @@ async def test_journal_request_is_balanced_and_names_the_online_branch(client, o
                                     + "\n", encoding="utf-8")
 
 
-async def test_close_the_rest_and_no_cancel_after_goods_arrived(client, owner, branch):
+async def test_nothing_to_close_or_cancel_after_goods_arrived(client, owner, branch):
     supplier = await fresh_supplier(client, owner)
     rice = await new_product(client, owner, name="Rice pack")
     oid, (line,) = await approved_order(owner, supplier, branch, [(rice, 10, "200.00")])
@@ -138,16 +124,10 @@ async def test_close_the_rest_and_no_cancel_after_goods_arrived(client, owner, b
     assert r.status_code == 409 and "cancel" in r.json()["detail"]
     assert (await receive(client, owner, oid, [{"order_line_id": line, "units": 6}])
             ).status_code == 201
-    r = await client.post(f"/orders/{oid}/cancel", headers=owner.headers,
-                          json={"reason": "changed my mind"})
-    assert r.status_code == 409 and "close the rest" in r.json()["detail"]
-    r = await client.post(f"/orders/{oid}/close-rest", headers=owner.headers,
-                          json={"reason": "supplier out of stock"})
-    assert r.status_code == 204
-    order = (await client.get(f"/orders/{oid}", headers=owner.headers)).json()
-    assert order["status"] == "received"
-    closed = await _events(oid, "order.rest_closed")
-    assert closed[0]["outstanding_units"] == 4 and closed[0]["reason"] == "supplier out of stock"
+    for path in ("cancel", "close-rest"):
+        r = await client.post(f"/orders/{oid}/{path}", headers=owner.headers,
+                              json={"reason": "changed my mind"})
+        assert r.status_code == 409, path
 
 
 async def test_weighed_goods_take_their_kilograms(client, owner, branch):
@@ -282,35 +262,94 @@ async def test_review_fixes_product_weight_and_dates(client, owner, branch):
 
 
 
-async def test_the_delivery_charge_goes_into_the_batch_cost(client, owner, branch):
-    """B2: Rs 100 delivery on Rs 1000 of goods, received in two parts: each batch carries its
-    share by value; together exactly the charge; the receipt total and journal include it."""
+async def _weigh(product: dict, grams: int | None) -> None:
+    """The weight staff entered on the Online product."""
     from app.core.db import get_sessionmaker
-    from app.models import OutboxEvent, SupplyOrder
+    from app.models import OnlineProduct, OnlineVariant
 
-    supplier = await fresh_supplier(client, owner)
-    tea = await new_product(client, owner, name="Tea LC")
-    jam = await new_product(client, owner, name="Jam LC")
-    oid, (tea_line, jam_line) = await approved_order(
-        owner, supplier, branch, [(tea, 3, "100.00"), (jam, 7, "100.00")])
     async with get_sessionmaker()() as s, s.begin():
-        (await s.get(SupplyOrder, uuid.UUID(oid))).delivery_charge = Decimal("100.00")
-    r1 = await receive(client, owner, oid, [{"order_line_id": tea_line, "units": 3},
-                                            {"order_line_id": jam_line, "units": 2}])
-    assert r1.status_code == 201, r1.text
-    first = r1.json()
-    assert [Decimal(x["landed_cost"]) for x in first["lines"]] == [Decimal("30.00"),
-                                                                   Decimal("20.00")]
-    assert Decimal(first["total"]) == Decimal("550.00")
-    r2 = await receive(client, owner, oid, [{"order_line_id": jam_line, "units": 5}])
-    second = r2.json()
-    assert Decimal(second["lines"][0]["landed_cost"]) == Decimal("50.00")
-    batches = {b["batch_id"]: b for b in (await client.get(
-        "/stock/batches", headers=owner.headers, params={"product_id": tea["product_id"]})).json()}
-    assert Decimal(batches[first["lines"][0]["batch_id"]]["unit_cost"]) == Decimal("110")
+        variant = await s.get(OnlineVariant, uuid.UUID(product["product_id"]))
+        (await s.get(OnlineProduct, variant.online_product_id)).weight_grams = grams
+
+
+async def _example(client, owner, branch):
+    """The owner's example (2026-11-26): A 100 x 100 g at 200, B 60 x 500 g at 400."""
+    supplier = await fresh_supplier(client, owner)
+    a = await new_product(client, owner, name="Soap A")
+    b = await new_product(client, owner, name="Powder B")
+    oid, (a_line, b_line) = await approved_order(
+        owner, supplier, branch, [(a, 100, "200.00"), (b, 60, "400.00")])
+    await _weigh(a, 100)
+    await _weigh(b, 500)
+    return oid, a, b, [{"order_line_id": a_line, "units": 100},
+                       {"order_line_id": b_line, "units": 60}]
+
+
+async def test_the_transport_charge_goes_by_weight_into_the_base_price(client, owner, branch):
+    from app.core.db import get_sessionmaker
+    from app.models import BasePrice, OutboxEvent
+
+    oid, a, b, lines = await _example(client, owner, branch)
+    r = await client.post(f"/orders/{oid}/receipts/preview", headers=owner.headers,
+                          json={"transport_charge": "4000", "lines": lines})
+    assert r.status_code == 200, r.text
+    seen = r.json()
+    assert [x["delivered_unit_price"] for x in seen["lines"]] == ["210.00", "450.00"]
+    assert seen["total"] == "48000.00" and seen["missing_weight"] == []
+
+    r = await receive(client, owner, oid, lines, transport_charge="4000",
+                      invoice_no="T-1", invoice_total="48000.00")
+    assert r.status_code == 201, r.text
+    got = r.json()
+    assert (got["transport_charge"], got["total"]) == ("4000.00", "48000.00")
+    assert [(x["unit_price"], x["landed_cost"]) for x in got["lines"]] == [
+        ("200.00", "1000.00"), ("400.00", "3000.00")]
     async with get_sessionmaker()() as s:
+        prices = {p.online_variant_id: (p.unit_price, p.bill_price) for p in await s.scalars(
+            select(BasePrice).where(BasePrice.order_id == uuid.UUID(oid)))}
         ev = await s.scalar(select(OutboxEvent).where(
             OutboxEvent.event == "receipt.posted",
-            OutboxEvent.payload["receipt_id"].astext == first["receipt_id"]))
-    assert ev.payload["total"] == "550.00"
-    assert ev.payload["lines"][0]["landed_cost"] == "30.00"
+            OutboxEvent.payload["receipt_id"].astext == got["receipt_id"]))
+    assert prices[uuid.UUID(a["product_id"])] == (Decimal("210.00"), Decimal("200.00"))
+    assert prices[uuid.UUID(b["product_id"])] == (Decimal("450.00"), Decimal("400.00"))
+    assert ev.payload["total"] == "48000.00"  # what Finance matches the bill against
+
+
+async def test_the_suppliers_figure_is_offered_and_staff_override_it(client, owner, branch):
+    from app.core.db import get_sessionmaker
+    from app.models import SupplyOrder
+
+    oid, _, _, lines = await _example(client, owner, branch)
+    async with get_sessionmaker()() as s, s.begin():
+        (await s.get(SupplyOrder, uuid.UUID(oid))).delivery_charge = Decimal("100.00")
+    page = (await client.get(f"/orders/{oid}/receiving", headers=owner.headers)).json()
+    assert page["transport_charge"] == "100.00" and page["online_stock_in"] is False
+    assert sorted((x["due_units"], x["unit_weight_grams"]) for x in page["lines"]) == [
+        (60, 500), (100, 100)]
+    r = await receive(client, owner, oid, lines, transport_charge="0")
+    assert r.status_code == 201, r.text
+    assert (r.json()["transport_charge"], r.json()["total"]) == ("0.00", "44000.00")
+
+
+async def test_a_missing_weight_saves_nothing(client, owner, branch):
+    oid, a, b, lines = await _example(client, owner, branch)
+    await _weigh(b, None)
+    seen = (await client.post(f"/orders/{oid}/receipts/preview", headers=owner.headers,
+                              json={"transport_charge": "4000", "lines": lines})).json()
+    assert len(seen["missing_weight"]) == 1 and "Powder B" in seen["missing_weight"][0]
+    r = await receive(client, owner, oid, lines, transport_charge="4000")
+    assert r.status_code == 422 and "Powder B" in r.json()["detail"]
+    assert (await client.get(f"/orders/{oid}", headers=owner.headers)).json()[
+        "status"] == "approved"
+    assert await batch_qty(client, owner, a) == {}
+    # without a charge no weight is needed
+    assert (await receive(client, owner, oid, lines)).status_code == 201
+
+
+async def test_a_large_charge_is_the_owners_to_save(client, owner, branch):
+    oid, _, _, lines = await _example(client, owner, branch)
+    staff = await sign_in(client, "purchasing")
+    r = await receive(client, staff, oid, lines, transport_charge="11000.01")  # above 25%
+    assert r.status_code == 403 and "owner" in r.json()["detail"]
+    assert (await receive(client, owner, oid, lines, transport_charge="11000.01")
+            ).status_code == 201

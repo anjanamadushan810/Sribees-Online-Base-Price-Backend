@@ -38,6 +38,7 @@ class QuickBuyIn(BaseModel):
     bill_no: str | None = Field(default=None, max_length=60)
     bill_total: PriceIn | None = None
     notes: str | None = Field(default=None, max_length=1000)
+    transport_charge: PriceIn | None = None
     lines: list[QuickLineIn] = Field(min_length=1, max_length=quick_buy.MAX_LINES)
 
 
@@ -75,7 +76,7 @@ async def create(body: QuickBuyIn, request: Request,
         Actor(user_id=p.user_id, role=p.role, ip_address=client_ip(request)),
         supplier_id=body.supplier_id, branch_id=body.branch_id,
         received_date=body.received_date, bill_no=body.bill_no, bill_total=body.bill_total,
-        notes=body.notes,
+        notes=body.notes, transport_charge=body.transport_charge,
         lines=[quick_buy.QuickLine(**ln.model_dump()) for ln in body.lines])
     names = await _names(db, Product, Product.product_id, [ln.product_id for ln in receipt.lines])
     return QuickBuyOut(order_id=order.order_id, order_no=order.order_no,

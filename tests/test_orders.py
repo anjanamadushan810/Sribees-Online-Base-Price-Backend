@@ -102,16 +102,29 @@ async def test_order_flow_and_base_price(client, owner, purchasing, shop):
     # receiving: the bill said 120, not 125
     staff = (await client.get(f"/orders/{oid}", headers=purchasing.headers)).json()
     soap_line = next(x for x in staff["lines"] if x["online_variant_id"] == shop["soap"])
+    from app.core.db import get_sessionmaker
+    from app.models import OnlineProduct
+
+    async with get_sessionmaker()() as s, s.begin():  # the supplier's Rs 300 goes by weight
+        (await s.get(OnlineProduct, CHERAMY_75)).weight_grams = 80
     r = await client.post(f"/orders/{oid}/receipts", headers=owner.headers, json={
         "received_date": D("2026-11-26"), "invoice_no": "N-1",
         "lines": [{"order_line_id": soap_line["line_id"], "units": 450, "unit_price": "120"}]})
     assert r.status_code == 201, r.text
     assert r.json()["lines"][0]["unit_price"] == "120.00"
+    # only the soap came: it carries the whole charge, 120 + 300/450 a piece
+    assert r.json()["transport_charge"] == "300.00"
     bp = (await client.get(f"/base-prices/{CHERAMY_75}", headers=purchasing.headers)).json()
-    assert [h["unit_price"] for h in bp["history"] if h["order_id"] == oid] == ["120.00"]
+    assert [(h["unit_price"], h["bill_price"]) for h in bp["history"]
+            if h["order_id"] == oid] == [("120.67", "120.00")]
     current = (await client.get("/base-prices", headers=purchasing.headers)).json()
     row = next(c for c in current if c["online_product_id"] == str(CHERAMY_75))
-    assert row["order_id"] == oid and row["unit_price"] == "120.00"
+    assert row["order_id"] == oid and row["unit_price"] == "120.67"
+    # the next order is offered the BILL price: transport never creeps into it
+    found = (await client.get("/online-items", headers=purchasing.headers,
+                              params={"q": "Cheramy"})).json()
+    assert next(x for x in found if x["online_variant_id"] == shop["soap"])[
+        "last_price"] == "120.00"
 
 
 async def test_cancel_voids_nothing_received(client, owner, purchasing, shop):

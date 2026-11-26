@@ -196,6 +196,9 @@ class ReceiptLineIn(BaseModel):
     labels: tuple[str, ...] = Field(default=(), max_length=5000)
     # the bill's price per unit (owner 2026-11-26); the order's price when left out
     unit_price: PriceIn | None = None
+    # the shop's prices, only when staff change them (empty = Online keeps its own)
+    listed_price: PriceIn | None = None
+    selling_price: PriceIn | None = None
 
 
 class ReceiptIn(BaseModel):
@@ -204,6 +207,8 @@ class ReceiptIn(BaseModel):
     invoice_total: PriceIn | None = None
     notes: str | None = Field(default=None, max_length=2000)
     lines: list[ReceiptLineIn] = Field(min_length=1, max_length=500)
+    # the delivery's transport charge, from the bill; the supplier's figure when left out
+    transport_charge: PriceIn | None = None
 
 
 class ReceiptLineOut(ORM):
@@ -235,6 +240,7 @@ class ReceiptOut(ORM):
     invoice_total: Money | None
     notes: str | None
     total: Money
+    transport_charge: Money = 0
     lines: list[ReceiptLineOut] = []
     created_at: datetime
 

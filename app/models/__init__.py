@@ -284,6 +284,7 @@ class OnlineProduct(Base):
     size_kind: Mapped[str | None] = mapped_column(String(8))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     image_url: Mapped[str | None] = mapped_column(String(500))  # main photo (migration 0020)
+    weight_grams: Mapped[int | None] = mapped_column(Integer)  # courier weight (0022)
     synced_at: Mapped[datetime] = _created()
 
 
@@ -398,7 +399,8 @@ class BasePrice(Base):
     supplier_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
     order_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
     line_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
-    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2))  # delivered to our store
+    bill_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))  # as billed (0022)
     mrp: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     recorded_at: Mapped[datetime] = _created()
     voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -731,6 +733,7 @@ class Receipt(Base):
     invoice_total: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     notes: Mapped[str | None] = mapped_column(Text)
     total: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    transport_charge: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
     journal_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     received_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.user_id"))
@@ -762,6 +765,26 @@ class ReceiptLine(Base):
     batch_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("stock_batches.batch_id"))
     landed_cost: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))  # 0018
+    # prices staff set for the shop at receiving (0022); empty = Online keeps its own
+    listed_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    selling_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+
+
+class OnlineStockSend(Base):
+    """0022: whether SRIBEESonline holds a received line's stock yet."""
+
+    __tablename__ = "online_stock_sends"
+
+    receipt_line_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("receipt_lines.receipt_line_id"), primary_key=True)
+    receipt_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("receipts.receipt_id"))
+    status: Mapped[str] = mapped_column(String(10), default="pending")
+    reason: Mapped[str | None] = mapped_column(String(300))
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class FinancePeriod(Base):

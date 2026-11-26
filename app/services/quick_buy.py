@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -62,7 +62,9 @@ async def search_items(db: AsyncSession, q: str, limit: int = 30) -> list[dict]:
         .order_by(OnlineProduct.name, OnlineVariant.name).limit(limit))).all()
     out = []
     for v, p in rows:
-        last = await db.scalar(select(BasePrice.unit_price).where(
+        # the last BILL price: transport must never creep into the next order's price
+        last = await db.scalar(select(func.coalesce(BasePrice.bill_price, BasePrice.unit_price)
+                                      ).where(
             BasePrice.online_variant_id == v.online_variant_id, BasePrice.voided_at.is_(None))
             .order_by(BasePrice.recorded_at.desc(), BasePrice.base_price_id.desc()).limit(1))
         out.append({"online_variant_id": v.online_variant_id,
@@ -76,7 +78,7 @@ async def search_items(db: AsyncSession, q: str, limit: int = 30) -> list[dict]:
 async def quick_buy(db: AsyncSession, staff: orders.StaffActor, actor: Actor, *,
                     supplier_id: uuid.UUID, branch_id: uuid.UUID, received_date: date,
                     bill_no: str | None, bill_total: Decimal | None, notes: str | None,
-                    lines: list[QuickLine]):
+                    lines: list[QuickLine], transport_charge: Decimal | None = None):
     if not (staff.can("orders.create") and staff.can("grn.create")):
         raise SupplyError("purchasing or the owner records a quick buy")
     if not lines:
@@ -111,7 +113,7 @@ async def quick_buy(db: AsyncSession, staff: orders.StaffActor, actor: Actor, *,
     order.approved_by_name = order.approved_by_name or "Quick buy (paid at the market)"
     receipt = await receiving.receive(
         db, actor, order.order_id, received_date=received_date, invoice_no=bill_no,
-        invoice_total=bill_total, notes=notes,
+        invoice_total=bill_total, notes=notes, transport_charge=transport_charge,
         lines=[receiving.ReceiptLineIn(
             order_line_id=line_of[ln.online_variant_id].line_id, units=ln.units,
             free_units=ln.free_units, weight_kg=ln.weight_kg, expiry_date=ln.expiry_date,

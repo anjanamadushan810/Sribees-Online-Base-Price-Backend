@@ -162,6 +162,8 @@ async def test_receiving_with_labels_and_the_go_live_switch(client, owner, branc
         look = (await client.get(f"/labels/{nums[3]}", headers=owner.headers)).json()
         assert look["batch"]["batch_id"] == batch_id
         # a label already on a batch cannot arrive again (the whole receipt is refused)
+        supplier = await fresh_supplier(client, owner)
+        oid, (line,) = await approved_order(owner, supplier, branch, [(rice, 6, "80.00")])
         r = await receive(client, owner, oid, [{"order_line_id": line, "units": 1,
                                                 "labels": [nums[0]]}])
         assert r.status_code == 409
@@ -169,6 +171,8 @@ async def test_receiving_with_labels_and_the_go_live_switch(client, owner, branc
         await client.patch("/settings/labels_required", headers=owner.headers,
                            json={"value": "0"})
     # switch off: receiving without labels works as before
+    supplier = await fresh_supplier(client, owner)
+    oid, (line,) = await approved_order(owner, supplier, branch, [(rice, 6, "80.00")])
     r = await receive(client, owner, oid, [{"order_line_id": line, "units": 1}])
     assert r.status_code == 201, r.text
 

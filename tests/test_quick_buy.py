@@ -91,3 +91,15 @@ async def test_who_and_which_supplier(client, owner, branch):
             BasePrice.online_variant_id == uuid.UUID(item)))
     assert bp.unit_price == Decimal("50.00")
     assert str(bp.supplier_id) == supplier["supplier_id"]
+
+
+async def test_a_bill_from_last_week_keeps_its_date(client, owner, branch):
+    """Owner 2026-11-26: bills of the last days are written up now; the bill's date stands."""
+    item, _ = await online_item("Bean QB")
+    supplier = await fresh_supplier(client, owner)
+    body = {"supplier_id": supplier["supplier_id"], "branch_id": str(branch),
+            "received_date": D("2026-11-18"), "bill_no": "OLD-1",
+            "lines": [{"online_variant_id": item, "units": 2, "unit_price": "40.00"}]}
+    r = await client.post("/quick-buys", headers=owner.headers, json=body)
+    assert r.status_code == 201, r.text
+    assert r.json()["receipt"]["received_date"] == D("2026-11-18")

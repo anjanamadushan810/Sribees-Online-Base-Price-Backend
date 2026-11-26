@@ -172,7 +172,9 @@ async def receive(
             and any(u.is_active for u in supplier.users)):
         raise Conflict(f"{supplier.name} has not accepted order {order.order_no} yet")
     submitted = order.submitted_at.date() if order.submitted_at else None
-    if submitted and received_date < submitted - timedelta(days=1):
+    # a quick buy is written up after the market bill (owner 2026-11-26: bills of the last
+    # days): the bill's date stands; the open-period check below still bounds it
+    if submitted and not order.is_quick_buy and received_date < submitted - timedelta(days=1):
         raise SupplyError("goods cannot arrive before they were ordered")
     if received_date > date.today() + timedelta(days=1):
         raise SupplyError("the receipt date is in the future")

@@ -79,6 +79,7 @@ class BatchOut(ORM):
     value_on_hand: Money
     status: str
     labelled: int = 0  # QR labels stuck on this batch (phase C)
+    unit: str = "each"  # "kg" = kept by weight (a bag that can be repacked)
 
 class BatchQtyIn(BaseModel):
     batch_id: uuid.UUID

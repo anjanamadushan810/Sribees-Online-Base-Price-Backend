@@ -54,6 +54,7 @@ async def test_a_bag_becomes_packs_at_its_cost(client, owner, branch):
     rows = (await client.get("/stock/batches", headers=owner.headers)).json()
     left = next(b for b in rows if b["batch_id"] == bag)
     assert Decimal(left["qty_on_hand"]) == Decimal("4.5")
+    assert left["unit"] == "kg"
 
     # more packs than rice, or too much waste, is refused
     bad = {**body, "kg_used": "1", "outputs": [{"online_variant_id": one, "packs": 2}]}

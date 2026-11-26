@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    BasePrice,
     OnlineProduct,
     OnlineVariant,
     Supplier,
@@ -59,9 +60,17 @@ async def search_items(db: AsyncSession, q: str, limit: int = 30) -> list[dict]:
                OnlineProduct.name.ilike(like) | OnlineProduct.name_si.ilike(like)
                | (OnlineProduct.sku == q) | (OnlineVariant.sku == q))
         .order_by(OnlineProduct.name, OnlineVariant.name).limit(limit))).all()
-    return [{"online_variant_id": v.online_variant_id, "online_product_id": p.online_product_id,
-             "name": p.name, "name_si": p.name_si, "variant": v.name,
-             "weight_grams": v.weight_grams, "image_url": p.image_url} for v, p in rows]
+    out = []
+    for v, p in rows:
+        last = await db.scalar(select(BasePrice.unit_price).where(
+            BasePrice.online_variant_id == v.online_variant_id, BasePrice.voided_at.is_(None))
+            .order_by(BasePrice.recorded_at.desc(), BasePrice.base_price_id.desc()).limit(1))
+        out.append({"online_variant_id": v.online_variant_id,
+                    "online_product_id": p.online_product_id, "name": p.name,
+                    "name_si": p.name_si, "variant": v.name, "weight_grams": v.weight_grams,
+                    "image_url": p.image_url,
+                    "last_price": f"{last:.2f}" if last is not None else None})
+    return out
 
 
 async def quick_buy(db: AsyncSession, staff: orders.StaffActor, actor: Actor, *,

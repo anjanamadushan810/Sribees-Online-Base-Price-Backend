@@ -1,0 +1,22 @@
+[
+ {"key":"A1","name":"Baby Cheramy Soap S-Pack +1 Free","sku":"BABY-CHERAMYSPACK1FREE","price":710,"cat":"cbc3947e-fc06-4244-8fe5-e099e9c5cf40","sub":"eebd21f0-43b3-40ee-8bd3-876cc15288cd","w":0.4},
+ {"key":"A2","name":"Calin Purple Soap 70g","sku":"PERS-CALINPURPLESOAP70G","price":125,"cat":"60300e07-8709-4371-8caa-5e915b4cb4a0","sub":"a2958b7a-380a-44d8-bf8f-460fdf495248","w":0.07,"size":"70","unit":"g"},
+ {"key":"A3","name":"Clogard Toothpaste 120g","sku":"PERS-CLOGARDTOOTHPASTE120G","price":240,"cat":"60300e07-8709-4371-8caa-5e915b4cb4a0","sub":"fa90bf6d-199e-44a1-a8a7-960b052a2ae3","w":0.12,"size":"120","unit":"g"},
+ {"key":"A5","name":"Clogard Toothpaste 70g","sku":"PERS-CLOGARDTOOTHPASTE70G","price":205,"cat":"60300e07-8709-4371-8caa-5e915b4cb4a0","sub":"fa90bf6d-199e-44a1-a8a7-960b052a2ae3","w":0.07,"size":"70","unit":"g"},
+ {"key":"A9","name":"Diva Washing Powder 1kg","sku":"HOME-DIVAWASHINGPOWDER1KG","price":375,"cat":"6bf1f5cd-1077-4130-818b-2fff21a7ccb0","sub":"857853d1-7b85-4a51-ab81-01949d281ee5","w":1.0,"size":"1","unit":"kg"},
+ {"key":"A10","name":"Lifebuoy Soap Double Pack","sku":"PERS-LIFEBUOYSOAPDOUBLE","price":280,"cat":"60300e07-8709-4371-8caa-5e915b4cb4a0","sub":"a2958b7a-380a-44d8-bf8f-460fdf495248","w":0.2},
+ {"key":"A19","name":"Vim Dishwash Bar 100g","sku":"HOME-VIMDISHWASHBAR100G","price":70,"cat":"6bf1f5cd-1077-4130-818b-2fff21a7ccb0","sub":"da17b6e4-0bd9-4fc2-bda1-30c3bcb73250","w":0.1,"size":"100","unit":"g"},
+ {"key":"A20","name":"Vim Dishwash Liquid 500ml","sku":"HOME-VIMDISHWASHLIQUID500ML","price":450,"cat":"6bf1f5cd-1077-4130-818b-2fff21a7ccb0","sub":"da17b6e4-0bd9-4fc2-bda1-30c3bcb73250","w":0.5,"size":"500","unit":"ml"},
+ {"key":"B6","name":"Fems Sanitary Napkin Pink","sku":"PERS-FEMSNAPKINPINK","price":270,"cat":"60300e07-8709-4371-8caa-5e915b4cb4a0","sub":"39b60a30-d727-4fc1-b041-8356f8cce57a","w":0.1},
+ {"key":"B7","name":"Happy Cow Cheese 8 Portions","sku":"DAIRY-HAPPYCOWCHEESE8P","price":880,"cat":"c1000000-0000-4000-a000-000000000002","sub":"62ae1a8b-9169-4586-9916-f972231ac944","w":0.14},
+ {"key":"B8","name":"Maliban Chocolate Biscuit","sku":"SNACK-MALIBANCHOCOBISCUIT","price":140,"cat":"7de34f70-3be7-44eb-adf7-6332cfc56491","sub":"ccef8af6-eb1a-40ce-ad7e-ff74482af99e","w":0.1},
+ {"key":"B10","name":"Pelwatte Full Cream Milk Powder 400g","sku":"DAIRY-PELWATTEMILK400G","price":1200,"cat":"c1000000-0000-4000-a000-000000000002","sub":"97d65dc2-633a-459c-a6bc-401001afea16","w":0.4,"size":"400","unit":"g"},
+ {"key":"B12","name":"Ratthi Full Cream Milk Powder 400g","sku":"DAIRY-RATTHIMILK400G","price":1300,"cat":"c1000000-0000-4000-a000-000000000002","sub":"97d65dc2-633a-459c-a6bc-401001afea16","w":0.4,"size":"400","unit":"g"},
+ {"key":"B13","name":"Samaposha 200g","sku":"FOOD-SAMAPOSHA200G","price":200,"cat":"dd32b1e5-5c4e-4068-8188-e0d3d343370b","sub":"a5b9b77c-d6d9-4d5d-84a1-2e0b2ce2b419","w":0.2,"size":"200","unit":"g"},
+ {"key":"B14","name":"Samaposha 500g","sku":"FOOD-SAMAPOSHA500G","price":475,"cat":"dd32b1e5-5c4e-4068-8188-e0d3d343370b","sub":"a5b9b77c-d6d9-4d5d-84a1-2e0b2ce2b419","w":0.5,"size":"500","unit":"g"},
+ {"key":"B16","name":"Signal Toothpaste 160g + Free Brush","sku":"PERS-SIGNAL160GFREEBRUSH","price":305,"cat":"60300e07-8709-4371-8caa-5e915b4cb4a0","sub":"fa90bf6d-199e-44a1-a8a7-960b052a2ae3","w":0.18,"size":"160","unit":"g"},
+ {"key":"B17","name":"Signal Toothpaste 200g","sku":"PERS-SIGNALTOOTHPASTE200G","price":365,"cat":"60300e07-8709-4371-8caa-5e915b4cb4a0","sub":"fa90bf6d-199e-44a1-a8a7-960b052a2ae3","w":0.2,"size":"200","unit":"g"},
+ {"key":"B19","name":"Signal Toothpaste 70g","sku":"PERS-SIGNALTOOTHPASTE70G","price":205,"cat":"60300e07-8709-4371-8caa-5e915b4cb4a0","sub":"fa90bf6d-199e-44a1-a8a7-960b052a2ae3","w":0.07,"size":"70","unit":"g"},
+ {"key":"B20","name":"Viva Malted Food Drink 400g","sku":"BEV-VIVAMALTEDDRINK400G","price":780,"cat":"574a2784-93cc-4a38-90b5-b239d569123e","sub":"23ed2478-3147-40f0-a666-5c1a8917fc5b","w":0.4,"size":"400","unit":"g"},
+ {"key":"D20","name":"Pond's Pure Detox Charcoal Face Wash","sku":"PERS-PONDSCHARCOALFACEWASH","price":250,"cat":"60300e07-8709-4371-8caa-5e915b4cb4a0","sub":"6f70a61c-aa69-4d1f-bdde-edc5859e5b97","w":0.05}
+]

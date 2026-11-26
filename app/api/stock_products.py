@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -239,3 +240,30 @@ async def close_rest(
 ):
     await receiving.close_rest(db, _actor(p, request), order_id, reason=body.reason,
                                scope=scoped_branches(p, None))
+
+
+# ---------------------------------------------------------------- repack (B2)
+class RepackOutIn(BaseModel):
+    online_variant_id: uuid.UUID
+    packs: int = Field(gt=0, le=100_000)
+    labels: tuple[str, ...] = Field(default=(), max_length=5000)
+
+
+class RepackIn(BaseModel):
+    batch_id: uuid.UUID
+    kg_used: Decimal = Field(gt=0, max_digits=14, decimal_places=3)
+    repack_date: date
+    notes: str | None = Field(default=None, max_length=1000)
+    outputs: list[RepackOutIn] = Field(min_length=1, max_length=20)
+
+
+@router.post("/stock/repacks", status_code=201)
+async def repack_bag(body: RepackIn, request: Request,
+                     p: Principal = Depends(require("stock.adjust")),
+                     db: AsyncSession = Depends(get_db)):
+    from app.services import repack
+
+    return await repack.repack(
+        db, _actor(p, request), batch_id=body.batch_id, kg_used=body.kg_used,
+        repack_date=body.repack_date, notes=body.notes, scope=scoped_branches(p, None),
+        outputs=[repack.RepackOut(**o.model_dump()) for o in body.outputs])

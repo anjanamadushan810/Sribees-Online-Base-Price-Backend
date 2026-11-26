@@ -125,6 +125,7 @@ async def test_submit_needs_online_branch(client, owner, purchasing, shop):  # n
 
 async def _only_variant(product_id) -> str:
     """Give the mirrored product one pack size (Online's default variant)."""
+    from sqlalchemy import update
     from sqlalchemy.dialects.postgresql import insert
 
     from app.core.db import get_sessionmaker
@@ -135,6 +136,9 @@ async def _only_variant(product_id) -> str:
         await s.execute(insert(OnlineVariant).values(
             online_variant_id=vid, online_product_id=product_id, name="Default",
             is_active=True).on_conflict_do_nothing())
+        # as a sync does: the product's default pack size goes off once it has a real one
+        await s.execute(update(OnlineVariant).where(OnlineVariant.online_variant_id == product_id)
+                        .values(is_active=False))
     return str(vid)
 
 

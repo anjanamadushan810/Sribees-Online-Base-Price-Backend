@@ -94,7 +94,9 @@ async def stock_item_for(db: AsyncSession, line: SupplyOrderLine) -> uuid.UUID |
     if line.online_product_id is None:
         return None
     ids = list(await db.scalars(select(OnlineVariant.online_variant_id).where(
-        OnlineVariant.online_product_id == line.online_product_id)))
+        OnlineVariant.online_product_id == line.online_product_id,
+        # a switched-off default pack size is not a real one (online_catalog)
+        (OnlineVariant.online_variant_id != line.online_product_id) | OnlineVariant.is_active)))
     return ids[0] if len(ids) == 1 else None
 
 
@@ -166,7 +168,8 @@ async def receive(
     if order.status not in RECEIVABLE and not quick:
         raise Conflict(f"order {order.order_no} is {order.status}; goods are received against "
                        "an order the supplier accepted")
-    if order.status == "approved" and any(u.is_active for u in supplier.users):
+    if (order.status == "approved" and not order.is_quick_buy
+            and any(u.is_active for u in supplier.users)):
         raise Conflict(f"{supplier.name} has not accepted order {order.order_no} yet")
     submitted = order.submitted_at.date() if order.submitted_at else None
     if submitted and received_date < submitted - timedelta(days=1):

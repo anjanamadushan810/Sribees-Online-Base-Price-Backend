@@ -81,5 +81,13 @@ async def test_who_and_which_supplier(client, owner, branch):
     async with get_sessionmaker()() as s, s.begin():
         s.add(SupplierUser(supplier_id=uuid.UUID(supplier["supplier_id"]), phone="+94770000999",
                            full_name="Shop app user"))
+    # owner 2026-11-26: a supplier on the app (Nishi Palace) may be paid at the counter too
     r = await client.post("/quick-buys", headers=owner.headers, json=body)
-    assert r.status_code == 409 and "supplier app" in r.json()["detail"]
+    assert r.status_code == 201, r.text
+    # the price paid is the item's base price
+    from app.models import BasePrice
+    async with get_sessionmaker()() as s:
+        bp = await s.scalar(select(BasePrice).where(
+            BasePrice.online_variant_id == uuid.UUID(item)))
+    assert bp.unit_price == Decimal("50.00")
+    assert str(bp.supplier_id) == supplier["supplier_id"]

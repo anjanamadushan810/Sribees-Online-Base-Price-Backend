@@ -20,6 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    BasePrice,
     OfferMatch,
     OnlineProduct,
     OnlineVariant,
@@ -27,12 +28,11 @@ from app.models import (
     SupplierOffer,
     SupplierProduct,
     SupplierSection,
-    SupplierUser,
     SupplyOrderLine,
 )
 from app.services import orders, receiving
 from app.services.actors import Actor
-from app.services.errors import Conflict, NotFound, SupplyError
+from app.services.errors import NotFound, SupplyError
 
 SECTION = "Quick buys"
 MAX_LINES = 200
@@ -112,9 +112,9 @@ async def quick_buy(db: AsyncSession, staff: orders.StaffActor, actor: Actor, *,
     supplier = await db.get(Supplier, supplier_id)
     if supplier is None or not supplier.is_active:
         raise NotFound("supplier not found")
-    if await db.scalar(select(SupplierUser.supplier_user_id).where(
-            SupplierUser.supplier_id == supplier_id, SupplierUser.is_active.is_(True)).limit(1)):
-        raise Conflict(f"{supplier.name} uses the supplier app: order from them the usual way")
+    # A supplier on the app may be paid at their counter too (owner 2026-11-26: Nishi
+    # Palace bills already paid in cash); the order is received at once, so the app never
+    # shows it to them.
 
     order = await orders.create(db, staff, supplier_id=supplier_id, branch_id=branch_id,
                                 note=("Quick buy" + (f": {notes}" if notes else ""))[:2000])
@@ -144,6 +144,11 @@ async def quick_buy(db: AsyncSession, staff: orders.StaffActor, actor: Actor, *,
         db.add(row)
         await db.flush()
         line_of[ln.online_variant_id] = row
+        # base price = the price we actually paid (round 2); a quick buy is a real buy
+        db.add(BasePrice(online_product_id=product.online_product_id,
+                         online_variant_id=variant.online_variant_id, supplier_id=supplier_id,
+                         order_id=order.order_id, line_id=row.line_id,
+                         unit_price=ln.unit_price, mrp=ln.mrp))
     await db.refresh(order, ["lines"])
     await orders.submit(db, staff, order.order_id)  # Finance's PO + approval, as usual
     order.approved_by_name = order.approved_by_name or "Quick buy (paid at the market)"

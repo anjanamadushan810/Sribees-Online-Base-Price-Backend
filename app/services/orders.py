@@ -247,7 +247,10 @@ async def submit(db: AsyncSession, actor: StaffActor, order_id: uuid.UUID) -> Su
             finance_item[ln.line_id] = ln.online_variant_id
         elif ln.online_product_id is not None:
             ids = list(await db.scalars(select(OnlineVariant.online_variant_id).where(
-                OnlineVariant.online_product_id == ln.online_product_id)))
+                OnlineVariant.online_product_id == ln.online_product_id,
+                # a switched-off default pack size is not a real one (online_catalog)
+                (OnlineVariant.online_variant_id != ln.online_product_id)
+                | OnlineVariant.is_active)))
             finance_item[ln.line_id] = ids[0] if len(ids) == 1 else None
         else:
             finance_item[ln.line_id] = None

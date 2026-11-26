@@ -173,6 +173,33 @@ async def test_sync_marks_missing_products_inactive(client, purchasing, matched_
         await online_catalog.apply(s, PAYLOAD, user_id=None)  # back for other tests
 
 
+async def test_sync_gives_plain_products_a_default_pack_size(client, owner):
+    """Owner 2026-11-26: most Online products have no pack sizes; Supply still stocks them."""
+    from app.core.db import get_sessionmaker
+    from app.models import OnlineVariant
+    from app.services import online_catalog
+
+    plain, real = uuid.uuid4(), uuid.uuid4()
+    payload = online_payload((plain, "P-1", "Plain Soap 70g", None, None, None))
+    async with get_sessionmaker()() as s, s.begin():
+        await online_catalog.apply(s, {"products": PAYLOAD["products"] + payload["products"]},
+                                   user_id=None)
+    async with get_sessionmaker()() as s:
+        v = await s.get(OnlineVariant, plain)
+        assert (v.online_product_id, v.is_active, v.weight_grams, v.name) == (plain, True, 70, "")
+    payload["products"][0]["variants"] = [{"variant_id": str(real), "sku": "P-1a",
+                                           "name": "Rose", "weight_grams": 70,
+                                           "is_active": True}]
+    async with get_sessionmaker()() as s, s.begin():
+        await online_catalog.apply(s, {"products": PAYLOAD["products"] + payload["products"]},
+                                   user_id=None)
+    async with get_sessionmaker()() as s:
+        assert (await s.get(OnlineVariant, plain)).is_active is False
+        assert (await s.get(OnlineVariant, real)).is_active is True
+    async with get_sessionmaker()() as s, s.begin():
+        await online_catalog.apply(s, PAYLOAD, user_id=None)
+
+
 async def test_sync_needs_the_online_link(client, owner):
     r = await client.post("/online-catalog/sync", headers=owner.headers)
     assert r.status_code == 422

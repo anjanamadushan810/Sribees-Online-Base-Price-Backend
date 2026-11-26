@@ -53,6 +53,13 @@ def _size(p: dict) -> tuple[Decimal, str] | None:
     return parse_size(p.get("name") or "")
 
 
+def _grams(size: tuple[Decimal, str] | None) -> int | None:
+    """Weight of a default pack size from the product's size (1 ml = 1 g, as for couriers)."""
+    if size is None or size[1] not in ("mass", "volume") or size[0] <= 0:
+        return None
+    return int(size[0])
+
+
 async def apply_branches(db: AsyncSession, branches: list) -> dict:
     """Make Supply's branches follow Online's. Matched by Online's id; a branch typed in by
     hand with the same code and no Online id yet is linked to it instead of duplicated."""
@@ -112,7 +119,8 @@ async def apply(db: AsyncSession, payload: dict, *, user_id: uuid.UUID | None) -
         await db.execute(stmt.on_conflict_do_update(
             index_elements=[OnlineProduct.online_product_id],
             set_={**values, "synced_at": stmt.excluded.synced_at}))
-        for v in p.get("variants") or []:
+        variants = p.get("variants") or []
+        for v in variants:
             vvalues = dict(online_product_id=pid, sku=v.get("sku"),
                            name=(v.get("name") or "")[:120],
                            weight_grams=v.get("weight_grams"),
@@ -121,6 +129,18 @@ async def apply(db: AsyncSession, payload: dict, *, user_id: uuid.UUID | None) -
                 online_variant_id=uuid.UUID(v["variant_id"]), **vvalues)
             await db.execute(vstmt.on_conflict_do_update(
                 index_elements=[OnlineVariant.online_variant_id], set_=vvalues))
+        # A product sold without pack sizes (most of Online's) still needs one to hold stock:
+        # its default pack size has the product's own id. Owner 2026-11-26. It is switched
+        # off (never deleted: stock may sit on it) once the product gets real pack sizes.
+        dvalues = dict(online_product_id=pid, sku=p.get("sku"), name="",
+                       weight_grams=_grams(size), is_active=not variants)
+        dstmt = insert(OnlineVariant).values(online_variant_id=pid, **dvalues)
+        if variants:
+            await db.execute(update(OnlineVariant).where(OnlineVariant.online_variant_id == pid)
+                             .values(is_active=False))
+        else:
+            await db.execute(dstmt.on_conflict_do_update(
+                index_elements=[OnlineVariant.online_variant_id], set_=dvalues))
     gone = await db.execute(
         update(OnlineProduct)
         .where(OnlineProduct.online_product_id.not_in(seen) if seen else true(),

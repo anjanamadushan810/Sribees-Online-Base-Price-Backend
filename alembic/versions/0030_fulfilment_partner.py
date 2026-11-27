@@ -1,16 +1,18 @@
 """Fulfilment partner (owner 2026-11-27, docs/plans/fulfilment-partner-2026-11-27.md): a shop
-that fills, order by order, the products a branch lists but does not carry (first: Nimali
-Stores for Matugama). Phase P1: who the partner is, where it serves, which products it fills,
-and its price to us + stock per product.
+that fills, order by order, the products a branch sells but does not carry (first: Nimali
+Stores for Matugama).
+
+Which products a branch carries is decided in SRIBEES Online (branch_inventory.sourcing_group:
+'store' = Our Store, 'external_daily' / 'external_slow' = Other Products); Supply mirrors it.
 
 - suppliers.kind: 'wholesale' (every supplier so far) | 'fulfilment_partner'
-- supplier_branches: the branches a partner serves (a partner serves nothing else)
-- online_branch_listings: which Online products a branch lists (from the catalogue sync)
-- branch_sourcing: per (branch, Online product) 'own' or 'partner'; no row = own = as today
+- supplier_branches: the branch a partner serves (one partner per branch)
+- online_branch_listings: which Online products a branch sells, with Online's sourcing group
 - partner_items: per pack size, the partner's price to us and its stock count
 - partner_price_changes: every price change the partner makes (staff alert)
+- fulfilment_requests / fulfilment_lines: what one Online order needs from the partner
 
-Nothing existing changes meaning: with these tables empty the system behaves as before (G1/G3).
+Nothing existing changes meaning: with no partner linked the system behaves as before (G1/G3).
 
 Revision ID: 0030
 Revises: 0029
@@ -30,7 +32,8 @@ def upgrade() -> None:
     op.execute("""
         CREATE TABLE supplier_branches (
             supplier_id uuid NOT NULL REFERENCES suppliers (supplier_id),
-            branch_id uuid NOT NULL REFERENCES branches (branch_id),
+            branch_id uuid NOT NULL UNIQUE REFERENCES branches (branch_id),
+            fills_store_shortfall boolean NOT NULL DEFAULT false,
             created_by uuid REFERENCES users (user_id),
             created_at timestamptz NOT NULL DEFAULT now(),
             PRIMARY KEY (supplier_id, branch_id)
@@ -39,22 +42,10 @@ def upgrade() -> None:
         CREATE TABLE online_branch_listings (
             branch_id uuid NOT NULL REFERENCES branches (branch_id),
             online_product_id uuid NOT NULL REFERENCES online_products (online_product_id),
+            sourcing_group varchar(20),
             synced_at timestamptz NOT NULL DEFAULT now(),
             PRIMARY KEY (branch_id, online_product_id)
         )""")
-    op.execute("""
-        CREATE TABLE branch_sourcing (
-            branch_id uuid NOT NULL REFERENCES branches (branch_id),
-            online_product_id uuid NOT NULL REFERENCES online_products (online_product_id),
-            mode varchar(8) NOT NULL CHECK (mode IN ('own', 'partner')),
-            partner_id uuid REFERENCES suppliers (supplier_id),
-            changed_by uuid REFERENCES users (user_id),
-            changed_at timestamptz NOT NULL DEFAULT now(),
-            PRIMARY KEY (branch_id, online_product_id),
-            CHECK ((mode = 'partner') = (partner_id IS NOT NULL))
-        )""")
-    op.execute("CREATE INDEX branch_sourcing_partner ON branch_sourcing (partner_id, branch_id) "
-               "WHERE mode = 'partner'")
     op.execute("""
         CREATE TABLE partner_items (
             item_id uuid PRIMARY KEY,
@@ -82,12 +73,57 @@ def upgrade() -> None:
         )""")
     op.execute("CREATE INDEX partner_price_changes_unseen ON partner_price_changes (branch_id) "
                "WHERE seen_at IS NULL")
+    op.execute("""
+        CREATE TABLE fulfilment_requests (
+            request_id uuid PRIMARY KEY,
+            request_no varchar(20) NOT NULL UNIQUE,
+            supplier_id uuid NOT NULL REFERENCES suppliers (supplier_id),
+            branch_id uuid NOT NULL REFERENCES branches (branch_id),
+            online_order_id uuid NOT NULL UNIQUE,
+            order_number varchar(50),
+            status varchar(10) NOT NULL DEFAULT 'new'
+                CHECK (status IN ('new', 'seen', 'ready', 'handed', 'cancelled')),
+            customer_name varchar(200),
+            customer_phone varchar(30),
+            alternate_phone varchar(30),
+            delivery_address text,
+            order_notes text,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            updated_at timestamptz NOT NULL DEFAULT now(),
+            seen_at timestamptz,
+            ready_at timestamptz,
+            handed_at timestamptz,
+            handed_by uuid REFERENCES users (user_id),
+            cancelled_at timestamptz,
+            cancel_reason varchar(200)
+        )""")
+    op.execute("CREATE INDEX fulfilment_requests_open ON fulfilment_requests "
+               "(supplier_id, status) WHERE status IN ('new', 'seen', 'ready')")
+    op.execute("CREATE INDEX fulfilment_requests_branch ON fulfilment_requests "
+               "(branch_id, created_at)")
+    op.execute("""
+        CREATE TABLE fulfilment_lines (
+            line_id uuid PRIMARY KEY,
+            request_id uuid NOT NULL REFERENCES fulfilment_requests (request_id)
+                ON DELETE CASCADE,
+            order_item_id uuid NOT NULL,
+            online_product_id uuid NOT NULL,
+            online_variant_id uuid NOT NULL,
+            name varchar(255) NOT NULL,
+            variant_name varchar(120),
+            qty integer NOT NULL CHECK (qty > 0),
+            price_to_us numeric(12, 2),
+            stock_taken integer NOT NULL DEFAULT 0 CHECK (stock_taken >= 0),
+            ticked_qty integer NOT NULL DEFAULT 0 CHECK (ticked_qty >= 0),
+            UNIQUE (request_id, order_item_id)
+        )""")
 
 
 def downgrade() -> None:
+    op.execute("DROP TABLE fulfilment_lines")
+    op.execute("DROP TABLE fulfilment_requests")
     op.execute("DROP TABLE partner_price_changes")
     op.execute("DROP TABLE partner_items")
-    op.execute("DROP TABLE branch_sourcing")
     op.execute("DROP TABLE online_branch_listings")
     op.execute("DROP TABLE supplier_branches")
     op.execute("ALTER TABLE suppliers DROP COLUMN kind")

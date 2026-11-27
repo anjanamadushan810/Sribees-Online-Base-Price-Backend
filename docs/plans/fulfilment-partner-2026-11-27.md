@@ -17,7 +17,7 @@ keep working unchanged.
 |---|---|
 | F1 | Nimali is a **fulfilment partner** supplier, linked to **Matugama only** (server-enforced). |
 | F2 | Sourcing per (branch, product): `own` or `partner`. **Own stock first; when own stock runs out the shortfall goes to the partner** automatically. |
-| F3 | Initial partner set = **every product listed for Matugama that the store does not carry**. Staff flip products to `own` one by one later. |
+| F3 | Initial partner set = **every product listed for Matugama that the store does not carry**. Staff flip products to `own` one by one later. *(Night 11-27: classified in Online admin via `sourcing_group`, see Architecture.)* |
 | F4 | Nimali's app shows **our product list in our names**; Nimali enters, per product, **the price they sell to us** and **their stock count**. No matching. |
 | F5 | Nimali's own cost price is never asked for and never stored. Their price to us = our base price (`base_prices`). |
 | F6 | **We see Nimali's real stock count**; it caps what customers can order for partner lines. |
@@ -55,28 +55,57 @@ keep working unchanged.
 
 ## Architecture
 
+### Decision 2026-11-27 night (tech lead): ONE place decides "does the branch carry it"
+Ashen merged Online #51 the same evening: `branch_inventory.sourcing_group` = `store` (Our
+Store) / `external_daily` / `external_slow` (Other Products) / null, edited in the admin's
+branch inventory. That is exactly own/partner, so **Online's sourcing_group is the single
+source of truth** and Supply only mirrors it. P1's own `branch_sourcing` table and `seed`
+were removed before anything was pushed. F3 becomes: staff classify in Online admin;
+"Other Products" go to the partner; `store`/unclassified stay own (= today).
+
 ### Supply (owner of the feature)
 - Migration 0030:
   - `suppliers.kind` (`wholesale` default | `fulfilment_partner`).
-  - `supplier_branches (supplier_id, branch_id)`; a partner serves only its listed branches.
-  - `branch_sourcing (branch_id, online_product_id, online_variant_id, mode, partner_id)`; no row = `own`.
-  - `partner_items (supplier_id, branch_id, product/variant, price_to_us, stock_qty, updated_at)`; price history in `partner_price_changes` (alert source, F10).
-  - `fulfilment_requests (request_no FR-######, online_order_id, order_number, branch_id, supplier_id, status new→seen→ready→handed→billed, ...)` + `fulfilment_lines (product/variant, qty, price_to_us, ticked_qty)`.
-  - `partner_statements` (weekly, F9): lines = handed requests; status open→sent→paid.
-- Splitting: Online sends `order.placed` (items + branch) on `/internal/supply/events`. For each line in a branch with a partner: qty from own stock first (F2), the rest → one fulfilment request per order. Idempotent on the event id.
-- Handover (F8): staff app / web scans the order slip → ticks lines → **pass-through receipt**: purchase of the ticked qty at `price_to_us` into Matugama + immediate consumption by the Online order (no batch left on the shelf, no QR). Finance gets purchase + COGS via the existing outbox; base price recorded.
-- Stock push to Online: available(partner product) = Nimali `stock_qty` minus open requests; sent like own stock but tagged `source=partner`.
-- RBAC: supplier token for a partner sees only its own requests/items (with the customer's name, phone, address: F14). Staff scoping uses the existing `branch_scope`; new routes get the same checks plus a test that a branch-B manager gets 404 on Matugama requests.
+  - `supplier_branches (supplier_id, branch_id UNIQUE, fills_store_shortfall)`: one partner per
+    branch; `fills_store_shortfall` (F2, default OFF) also sends the part of an Our Store line
+    the shelf cannot cover. Keep it off until the branch's stock in Supply is complete (go-live
+    count), else goods still on the shelf would be bought again.
+  - `online_branch_listings (branch_id, online_product_id, sourcing_group)`: mirror of Online,
+    from the catalogue sync (`listings` per product).
+  - `partner_items (supplier_id, branch_id, variant, price_to_us, stock_qty)`; price history in
+    `partner_price_changes` (alert source, F10).
+  - `fulfilment_requests (FR-######, online_order_id UNIQUE, status new→seen→ready→handed |
+    cancelled, customer name/phone/address)` + `fulfilment_lines (qty, price_to_us snapshot,
+    stock_taken, ticked_qty)`.
+- Splitting (P2, built): the existing Online `order.status` events (feed
+  `/internal/supply/events`, worker online_events.py) drive `partner_requests.apply_event` in a
+  savepoint (G7). Live statuses pending/confirmed/processing/packing create ONE request per
+  order for its Other Products lines; the first event of a new order has no lines (Online writes
+  it before its items, test in Online), so Supply reads `GET /internal/supply/orders/{id}`.
+  Edits are followed until the partner marks the bag ready; a cancel gives the partner's stock
+  back. Push texts partner_request / partner_changed / partner_cancelled.
+- Handover (P4): staff scan the order slip → tick lines → **pass-through receipt**: purchase of
+  the ticked qty at `price_to_us` into the branch + immediate consumption by the Online order
+  (no batch left on the shelf, no QR). Finance gets purchase + COGS via the existing outbox;
+  base price recorded.
+- Weekly statement (P5, F9): handed requests of the week, status open→sent→paid.
+- Partner availability to Online (P3): available = partner `stock_qty` (already reduced by
+  open requests).
+- RBAC: a partner token sees only its own requests/items (with the customer's details: F14);
+  staff routes use `branch_scope`; tests prove a branch-B manager gets 403/404 on Matugama.
 
-### Online backend (small)
-- Emit `order.placed` with items into the existing supply events feed (with branch id).
-- Accept partner availability in the Supply stock push (no new customer UI).
-- Partner pricing (F15-F17): `branch_inventory.source` (`own`|`partner`, pushed by Supply);
-  `PUT /internal/supply/partner-price` (service token) sets the Matugama branch price / weight
-  prices of a partner product only. Nimali never gets an Online admin login: the app talks to
-  Supply, Supply checks the product is this partner's at this branch, audits, then calls Online.
-  `/admin/inventory` + weight branch-price refuse a branch manager on a `partner` product
-  (super admin may).
+### Online backend (small, additive)
+- Built (P2): catalogue `listings` per product (active branch rows + sourcing_group) and
+  `GET /internal/supply/orders/{id}` (customer name, phone, address, notes, lines). Same
+  service-token / never-through-the-edge locks.
+- **Release dependency:** `/internal/supply/events` (pack-scan, commit 5ed4788) exists only on
+  Online `development`; prod `main` does not have it yet. The partner flow works on prod only
+  after that endpoint reaches main (owner MCQ at release).
+- Partner pricing (P3, F15-F17): `PUT /internal/supply/partner-price` (service token) sets the
+  branch price / weight prices of an Other Products item of a branch with a partner. Nimali
+  never gets an Online admin login: app → Supply (checks the item is this partner's at this
+  branch, audits) → Online. `/admin/inventory` refuses a branch manager's price change on an
+  Other Products item of a branch with a partner (super admin may).
 
 ### Supplier app (same Flutter app, partner mode)
 - Tabs: Requests (push on new; customer name/phone/address shown), My items (price to us +
@@ -109,4 +138,5 @@ P1 schema + sourcing + partner items (backend) · P2 Online `order.placed` + spl
 ## Status
 | Phase | State |
 |---|---|
-| P1 | Built 2026-11-27 on `feat/fulfilment-partner` (local, not pushed): migration 0030, `app/services/partners.py`, `app/api/partners.py`, catalogue `branch_ids` listings, 12 tests (`tests/test_partners.py`); full suite 287 pass; 0030 replayed up/down twice on PG 18. Online does not send `branch_ids` yet (P2), so `seed` answers "sync first" until then. |
+| P1 | Built 2026-11-27 (local `feat/fulfilment-partner`): partner kind, one partner per branch, partner items + price alerts, staff sourcing view/share. |
+| P2 | Built 2026-11-27 night (local): sourcing mirrored from Online `sourcing_group`; fulfilment requests from order events (create / follow edits / cancel / ready), partner app request routes, push texts. Supply suite 295 pass; 0030 replayed twice on PG 18. Online branch `feat/fulfilment-partner` (off main 982fb1d): catalogue `listings` + `GET /internal/supply/orders/{id}`, 3 new tests. |

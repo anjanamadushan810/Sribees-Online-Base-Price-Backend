@@ -1,5 +1,5 @@
-"""Fulfilment partner, phase P1 (app/services/partners.py): staff set-up and the partner's
-own item list (price to us + stock)."""
+"""Fulfilment partner (app/services/partners.py, partner_requests.py): staff set-up, the
+partner's own item list (price to us + stock) and the customer orders it packs."""
 
 import uuid
 from decimal import Decimal
@@ -18,7 +18,7 @@ from app.api.deps import (
     scoped_branches,
 )
 from app.core.db import get_db
-from app.services import partners
+from app.services import partner_requests, partners
 from app.services.actors import Actor
 
 router = APIRouter(tags=["fulfilment partner"])
@@ -34,13 +34,9 @@ class KindIn(BaseModel):
 
 class BranchIn(BaseModel):
     branch_id: uuid.UUID
-
-
-class SourcingIn(BaseModel):
-    branch_id: uuid.UUID
-    online_product_id: uuid.UUID
-    mode: Literal["own", "partner"]
-    partner_id: uuid.UUID | None = None
+    # F2: also fill the part of an Our Store line the shelf cannot cover (off until the
+    # branch's stock in Supply is complete)
+    fills_store_shortfall: bool = False
 
 
 class ItemIn(BaseModel):
@@ -63,7 +59,8 @@ async def link_branch(supplier_id: uuid.UUID, body: BranchIn, request: Request,
                       p: Principal = Depends(require("partners.write")),
                       db: AsyncSession = Depends(get_db)):
     return await partners.link_branch(db, _actor(p, request), supplier_id, body.branch_id,
-                                      p.branch_scope())
+                                      p.branch_scope(),
+                                      fills_store_shortfall=body.fills_store_shortfall)
 
 
 @router.delete("/partners/{supplier_id}/branches/{branch_id}")
@@ -72,24 +69,6 @@ async def unlink_branch(supplier_id: uuid.UUID, branch_id: uuid.UUID, request: R
                         db: AsyncSession = Depends(get_db)):
     return await partners.unlink_branch(db, _actor(p, request), supplier_id, branch_id,
                                         p.branch_scope())
-
-
-@router.post("/partners/{supplier_id}/seed")
-async def seed(supplier_id: uuid.UUID, body: BranchIn, request: Request,
-               p: Principal = Depends(require("partners.write")),
-               db: AsyncSession = Depends(get_db)):
-    return await partners.seed(db, _actor(p, request), supplier_id, body.branch_id,
-                               p.branch_scope())
-
-
-@router.put("/partners/sourcing")
-async def set_sourcing(body: SourcingIn, request: Request,
-                       p: Principal = Depends(require("partners.write")),
-                       db: AsyncSession = Depends(get_db)):
-    return await partners.set_sourcing(db, _actor(p, request), branch_id=body.branch_id,
-                                       online_product_id=body.online_product_id,
-                                       mode=body.mode, partner_id=body.partner_id,
-                                       scope=p.branch_scope())
 
 
 @router.get("/partners/sourcing")
@@ -115,6 +94,26 @@ async def price_changes(branch_id: uuid.UUID | None = None, all: bool = False,
                         db: AsyncSession = Depends(get_db)):
     scope = scoped_branches(p, None)
     return await partners.price_changes(db, scope, branch_id=branch_id, unseen_only=not all)
+
+
+@router.get("/partners/requests")
+async def staff_requests(branch_id: uuid.UUID | None = None,
+                         status: Literal["open", "new", "seen", "ready", "handed",
+                                         "cancelled"] | None = "open",
+                         limit: int = Query(default=50, ge=1, le=200),
+                         offset: int = Query(default=0, ge=0),
+                         p: Principal = Depends(require("partners.read")),
+                         db: AsyncSession = Depends(get_db)):
+    return await partner_requests.staff_list(db, p.branch_scope(), branch_id=branch_id,
+                                             status=status, limit=limit, offset=offset)
+
+
+@router.get("/partners/requests/{request_id}")
+async def staff_request(request_id: uuid.UUID,
+                        p: Principal = Depends(require("partners.read")),
+                        db: AsyncSession = Depends(get_db)):
+    fr = await partner_requests.staff_get(db, p.branch_scope(), request_id=request_id)
+    return partner_requests.summary(fr, with_customer=True)
 
 
 @router.post("/partners/price-changes/{change_id}/seen", status_code=204)
@@ -147,3 +146,27 @@ async def update_item(body: ItemIn, request: Request,
         price_to_us=body.price_to_us if "price_to_us" in sent else partners.UNSET,
         stock_qty=body.stock_qty if "stock_qty" in sent else partners.UNSET,
         ip_address=client_ip(request))
+
+
+@router.get("/supplier/partner/requests")
+async def my_requests(open_only: bool = True,
+                      limit: int = Query(default=50, ge=1, le=200),
+                      offset: int = Query(default=0, ge=0),
+                      sp: SupplierPrincipal = Depends(current_supplier),
+                      db: AsyncSession = Depends(get_db)):
+    return await partner_requests.partner_list(db, sp.supplier_id, open_only=open_only,
+                                               limit=limit, offset=offset)
+
+
+@router.get("/supplier/partner/requests/{request_id}")
+async def my_request(request_id: uuid.UUID,
+                     sp: SupplierPrincipal = Depends(current_supplier),
+                     db: AsyncSession = Depends(get_db)):
+    return await partner_requests.partner_open(db, sp.supplier_id, request_id)
+
+
+@router.post("/supplier/partner/requests/{request_id}/ready")
+async def request_ready(request_id: uuid.UUID,
+                        sp: SupplierPrincipal = Depends(current_supplier),
+                        db: AsyncSession = Depends(get_db)):
+    return await partner_requests.partner_ready(db, sp.supplier_id, request_id)

@@ -45,6 +45,13 @@ TEXT = {
                         "{order_no}: Sribees ඇණවුම අවලංගු කළා. / Sribees cancelled this order."),
     "received": ("භාණ්ඩ ලැබුණා · Goods received",
                  "{order_no}: Sribees ඔබේ භාණ්ඩ භාර ගත්තා. / Sribees received your goods."),
+    # fulfilment partner (plan P2): one customer order's lines to pack
+    "partner_request": ("නව ඇණවුමක් · New order to pack",
+                        "{order_no}: පාරිභෝගික ඇණවුමක් pack කරන්න. / Pack a customer order."),
+    "partner_changed": ("ඇණවුම වෙනස් වුණා · Order changed",
+                        "{order_no}: ඇණවුමේ භාණ්ඩ වෙනස් වුණා. / The order's items changed."),
+    "partner_cancelled": ("ඇණවුම අවලංගුයි · Order cancelled",
+                          "{order_no}: මේ ඇණවුම pack කරන්න එපා. / Do not pack this order."),
 }
 
 _token: dict = {"value": None, "expires": 0.0}

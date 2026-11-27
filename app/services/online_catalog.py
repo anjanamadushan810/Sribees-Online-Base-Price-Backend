@@ -9,8 +9,10 @@ supply/catalog with "Authorization: Bearer {ONLINE_SERVICE_TOKEN}" answers
                                  "is_active"}]}],
      "branches": [{"branch_id", "code", "name", "is_active"}]}   # branches: optional
 
-A product may also carry "branch_ids": the Online branches that list it (fulfilment partner,
-migration 0030). When no product carries the key (an older Online) the listings are left alone.
+A product may also carry "listings": [{"branch_id", "sourcing_group"}], the Online branches
+that sell it and how each gets it ('store' / 'external_daily' / 'external_slow' / null;
+fulfilment partner, migration 0030). When no product carries the key (an older Online) the
+listings are left alone.
 
 Branches are Online's: a branch missing from the answer is left alone (never deleted or
 switched off by a sync); one we already have by code is linked, not duplicated.
@@ -196,10 +198,13 @@ async def apply(db: AsyncSession, payload: dict, *, user_id: uuid.UUID | None) -
     return value
 
 
+GROUPS = ("store", "external_daily", "external_slow")
+
+
 async def apply_listings(db: AsyncSession, products: list) -> int | None:
-    """Which branch lists which product (per product "branch_ids", Online branch ids). Only
-    the products in this answer that carry the key are rewritten; None = Online sent none."""
-    carrying = [p for p in products if isinstance(p.get("branch_ids"), list)]
+    """Which branch sells which product and how it gets it. Only the products in this answer
+    that carry "listings" are rewritten; None = Online sent none (older Online)."""
+    carrying = [p for p in products if isinstance(p.get("listings"), list)]
     if not carrying:
         return None
     rows = await db.execute(select(Branch.online_branch_id, Branch.branch_id)
@@ -211,8 +216,15 @@ async def apply_listings(db: AsyncSession, products: list) -> int | None:
     count = 0
     for p in carrying:
         pid = uuid.UUID(p["product_id"])
-        for bid in {ours[str(o)] for o in p["branch_ids"] if str(o) in ours}:
-            db.add(OnlineBranchListing(branch_id=bid, online_product_id=pid))
+        groups: dict = {}
+        for item in p["listings"]:
+            bid = ours.get(str((item or {}).get("branch_id")))
+            if bid is not None:
+                group = item.get("sourcing_group")
+                groups[bid] = group if group in GROUPS else None
+        for bid, group in groups.items():
+            db.add(OnlineBranchListing(branch_id=bid, online_product_id=pid,
+                                       sourcing_group=group))
             count += 1
     await db.flush()
     return count

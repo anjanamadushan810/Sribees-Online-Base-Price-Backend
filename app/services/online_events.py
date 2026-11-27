@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.core.config import get_settings
 from app.models import OnlineEventFailure, SyncState
-from app.services import picks
+from app.services import audit, partner_requests, picks
 
 log = logging.getLogger("supply.online_events")
 KEY = "online_events"
@@ -55,6 +55,22 @@ async def _advance(db, seq: int) -> bool:
         return False  # another round got here first
     state.value = {"seq": seq}
     return True
+
+
+async def _partner(db, ev: dict) -> str:
+    """The fulfilment partner's part of an event (app/services/partner_requests.py), in a
+    savepoint: if it fails, the pack-scan work of the same event still commits (plan G7)."""
+    try:
+        async with db.begin_nested():
+            return await partner_requests.apply_event(db, ev)
+    except Exception as exc:  # noqa: BLE001 -- logged and audited; the shop goes on
+        log.exception("partner part of online event %s failed", ev.get("seq"))
+        await audit.record(db, action="partner.event_failed", entity="online_event",
+                           entity_id=ev.get("seq"),
+                           after={"type": ev.get("type"),
+                                  "order_id": (ev.get("payload") or {}).get("order_id"),
+                                  "error": str(getattr(exc, "message", exc))[:500]})
+        return "partner:failed"
 
 
 async def run_once(sessionmaker: async_sessionmaker, client: httpx.AsyncClient,
@@ -93,6 +109,9 @@ async def run_once(sessionmaker: async_sessionmaker, client: httpx.AsyncClient,
                     expected = seq + 1
                     continue
                 what = await picks.apply_event(db, ev)
+                extra = await _partner(db, ev)
+                if extra != "ignored":
+                    what = extra if what == "ignored" else f"{what}+{extra}"
         except Exception as exc:  # noqa: BLE001 -- kept for staff, position moves on
             log.exception("online event %s (%s) failed", seq, ev.get("type"))
             p = ev.get("payload") or {}

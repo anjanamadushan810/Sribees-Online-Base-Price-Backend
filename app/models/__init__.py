@@ -1051,7 +1051,7 @@ class ReorderRun(Base):
 
 # ================================================================ fulfilment partner (0030)
 class SupplierBranch(Base):
-    """A branch a fulfilment partner serves; it serves no other."""
+    """The branch a fulfilment partner serves (one partner per branch)."""
 
     __tablename__ = "supplier_branches"
 
@@ -1059,13 +1059,18 @@ class SupplierBranch(Base):
         UUID(as_uuid=True), ForeignKey("suppliers.supplier_id"), primary_key=True)
     branch_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("branches.branch_id"), primary_key=True)
+    # F2: an Our Store product the branch has run out of goes to the partner too. Off until
+    # the branch's stock in Supply is complete (go-live count), else it would send goods
+    # the shelf still holds.
+    fills_store_shortfall: Mapped[bool] = mapped_column(Boolean, default=False)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.user_id"))
     created_at: Mapped[datetime] = _created()
 
 
 class OnlineBranchListing(Base):
-    """An Online product a branch lists (catalogue sync, optional `branch_ids`)."""
+    """An Online product a branch sells, and how it gets it (Online's sourcing_group:
+    'store' | 'external_daily' | 'external_slow' | None = unclassified)."""
 
     __tablename__ = "online_branch_listings"
 
@@ -1073,25 +1078,8 @@ class OnlineBranchListing(Base):
         UUID(as_uuid=True), ForeignKey("branches.branch_id"), primary_key=True)
     online_product_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("online_products.online_product_id"), primary_key=True)
+    sourcing_group: Mapped[str | None] = mapped_column(String(20))
     synced_at: Mapped[datetime] = _created()
-
-
-class BranchSourcing(Base):
-    """Where a branch gets a product: 'own' stock or a fulfilment 'partner'. No row = own."""
-
-    __tablename__ = "branch_sourcing"
-
-    branch_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("branches.branch_id"), primary_key=True)
-    online_product_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("online_products.online_product_id"), primary_key=True)
-    mode: Mapped[str] = mapped_column(String(8))
-    partner_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("suppliers.supplier_id"))
-    changed_by: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.user_id"))
-    changed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class PartnerItem(Base):
@@ -1135,3 +1123,54 @@ class PartnerPriceChange(Base):
     seen_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.user_id"))
     seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class FulfilmentRequest(Base):
+    """What one Online order needs from the branch's fulfilment partner (FR-000001)."""
+
+    __tablename__ = "fulfilment_requests"
+
+    request_id: Mapped[uuid.UUID] = _uuid_pk()
+    request_no: Mapped[str] = mapped_column(String(20))
+    supplier_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("suppliers.supplier_id"))
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id"))
+    online_order_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    order_number: Mapped[str | None] = mapped_column(String(50))
+    status: Mapped[str] = mapped_column(String(10), default="new")
+    customer_name: Mapped[str | None] = mapped_column(String(200))
+    customer_phone: Mapped[str | None] = mapped_column(String(30))
+    alternate_phone: Mapped[str | None] = mapped_column(String(30))
+    delivery_address: Mapped[str | None] = mapped_column(Text)
+    order_notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    handed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    handed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_reason: Mapped[str | None] = mapped_column(String(200))
+
+    lines: Mapped[list["FulfilmentLine"]] = relationship(
+        lazy="selectin", order_by="FulfilmentLine.name", cascade="all, delete-orphan")
+
+
+class FulfilmentLine(Base):
+    __tablename__ = "fulfilment_lines"
+
+    line_id: Mapped[uuid.UUID] = _uuid_pk()
+    request_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fulfilment_requests.request_id"))
+    order_item_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    online_product_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    online_variant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    name: Mapped[str] = mapped_column(String(255))
+    variant_name: Mapped[str | None] = mapped_column(String(120))
+    qty: Mapped[int] = mapped_column(Integer)
+    price_to_us: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    stock_taken: Mapped[int] = mapped_column(Integer, default=0)
+    ticked_qty: Mapped[int] = mapped_column(Integer, default=0)

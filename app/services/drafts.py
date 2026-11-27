@@ -242,13 +242,8 @@ async def add_line(db: AsyncSession, actor: Actor, draft: ReceiptDraft, order: S
     if not (0 < body.units <= receiving.MAX_UNITS) or not (0 <= body.free_units
                                                           <= receiving.MAX_UNITS):
         raise SupplyError(f"{name}: units must be above zero")
-    if ol is not None:
-        got = (await receiving.received_units(db, order.order_id)).get(ol.line_id, 0)
-        taking = (await _draft_units(db, draft.draft_id)).get(ol.line_id, 0)
-        left = ol.units - got - taking
-        if body.units > left:
-            raise SupplyError(f"{name}: {body.units} entered but only {max(left, 0)} of "
-                              f"{ol.units} are still due")
+    # owner 2026-11-27: a supplier may send more than was ordered; it is taken (the app
+    # asks staff to confirm), and the bill total shows it to the accountant
     check_expiry(body.expiry_date, colombo_today(), body.mfg_date, name)
     if body.mrp is not None and body.mrp < 0:
         raise SupplyError(f"{name}: the MRP cannot be below zero")

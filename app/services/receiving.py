@@ -485,10 +485,8 @@ async def _check_line(db: AsyncSession, order: SupplyOrder, order_lines: dict, g
     name = f"{ol.heading} {ol.label or ''}".strip()
     if not (0 < ln.units <= MAX_UNITS) or not (0 <= ln.free_units <= MAX_UNITS):
         raise SupplyError(f"{name}: received units must be above zero")
-    left = ol.units - got.get(ol.line_id, 0)
-    if ln.units > left:
-        raise SupplyError(f"{name}: received {ln.units} but only {left} of {ol.units} "
-                          "are still due")
+    # owner 2026-11-27: more than was ordered is taken (a supplier sends a different
+    # quantity for many reasons); staff confirm it in the app, the bill total shows it
     item = await stock_item_for(db, ol)
     if ln.product_id is not None and ln.product_id != item:
         # Only another pack size of the same Online product (review #3).

@@ -101,9 +101,11 @@ async def test_exactly_one_qr_per_unit(client, owner, branch):
     assert r.status_code == 422 and "twice" in r.text
     r = await _line(client, owner, d["draft_id"], order_line_id=l1, units=48, labels=qr[:48])
     assert r.status_code == 201, r.text
-    # more than is due
+    # owner 2026-11-27: more than was ordered is taken (the supplier sent one extra)
     r = await _line(client, owner, d["draft_id"], order_line_id=l1, units=1, labels=[qr[48]])
-    assert r.status_code == 422 and "still due" in r.text
+    assert r.status_code == 201, r.text
+    ol = (await _draft(client, owner, oid))["order_lines"][0]
+    assert (ol["ordered"], ol["in_draft"], ol["due"]) == (48, 49, 0)
 
 
 async def test_same_qr_on_two_products_is_refused(client, owner, branch):

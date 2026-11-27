@@ -44,9 +44,7 @@ async def test_a_short_delivery_closes_the_order(client, owner, branch):
     inventory = await balance(client, owner, "1300", branch)
     grni = await balance(client, owner, "2020", branch)
 
-    # more than was ordered is refused; tea needs its expiry
-    r = await receive(client, owner, oid, [{"order_line_id": jam_line, "units": 11}])
-    assert r.status_code == 422 and "only 10 of 10" in r.json()["detail"]
+    # tea needs its expiry (more than ordered is taken: test_more_than_ordered_is_taken)
     r = await receive(client, owner, oid, [{"order_line_id": tea_line, "units": 5,
                                             "expiry_date": None}])
     assert r.status_code == 422 and "expiry" in r.json()["detail"]
@@ -435,11 +433,6 @@ async def test_one_order_line_split_into_two_batches(client, owner, branch):
     oid, (jam_line,) = await approved_order(owner, supplier, branch, [(jam, 48, "100.00")])
 
     r = await receive(client, owner, oid, [
-        {"order_line_id": jam_line, "units": 30},
-        {"order_line_id": jam_line, "units": 20}])
-    assert r.status_code == 422 and "only 18 of 48" in r.json()["detail"]
-
-    r = await receive(client, owner, oid, [
         {"order_line_id": jam_line, "units": 30, "unit_price": "100.00", "mrp": "150.00",
          "expiry_date": "2027-03-01"},
         {"order_line_id": jam_line, "units": 18, "free_units": 2, "unit_price": "110.00",
@@ -463,3 +456,23 @@ async def test_one_order_line_split_into_two_batches(client, owner, branch):
         prices = await s.scalars(select(BasePrice.bill_price).where(
             BasePrice.order_id == uuid.UUID(oid)))
         assert sorted(prices) == [Decimal("100.00"), Decimal("110.00")]
+
+
+async def test_more_than_ordered_is_taken(client, owner, branch):
+    """Owner 2026-11-27: a supplier may send a different quantity; 12 ordered, 15 came (in
+    two batches) -> all 15 go into stock at the bill price and the order is received."""
+    supplier = await fresh_supplier(client, owner)
+    jam = await new_product(client, owner, name="Jam")
+    oid, (jam_line,) = await approved_order(owner, supplier, branch, [(jam, 12, "100.00")])
+    r = await receive(client, owner, oid, [
+        {"order_line_id": jam_line, "units": 10, "expiry_date": "2027-03-01"},
+        {"order_line_id": jam_line, "units": 5, "expiry_date": "2027-06-01"}])
+    assert r.status_code == 201, r.text
+    assert r.json()["total"] == "1500.00"
+    batches = (await client.get("/stock/batches", headers=owner.headers,
+                                params={"product_id": jam["product_id"]})).json()
+    assert sorted(b["qty_on_hand"] for b in batches) == ["10", "5"]
+    order = (await client.get(f"/orders/{oid}", headers=owner.headers)).json()
+    assert order["status"] == "received"
+    posted = (await _events(oid, "receipt.posted"))[0]
+    assert (posted["ordered_units"], posted["outstanding_units"]) == (12, 0)

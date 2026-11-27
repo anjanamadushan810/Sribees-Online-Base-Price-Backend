@@ -34,8 +34,8 @@ async def note(db: AsyncSession, receipt: Receipt, arrived, batch: dict) -> Pric
     old_listed, old_selling = _d(batch.get("old_listed_price")), _d(batch.get("old_selling_price"))
     if listed is None or selling is None:
         return None
-    paid_units = max(arrived.units, 1)
-    base = (arrived.value / paid_units).quantize(Decimal("0.0001"))
+    pieces = max(arrived.units + arrived.free_units, 1)  # same as Online's purchase cost
+    base = (arrived.value / pieces).quantize(Decimal("0.0001"))
     changed = (listed, selling) != (old_listed, old_selling)
     if not changed and selling >= base:
         return None

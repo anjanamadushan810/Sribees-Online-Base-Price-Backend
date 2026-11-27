@@ -119,7 +119,8 @@ async def send(client: httpx.AsyncClient, online_branch_id: uuid.UUID, receipt_n
             if r is None:
                 raise SupplyError("SRIBEESonline did not answer for every line")
             ok = r.get("status") in ("added", "already")
-            batch = r if r.get("status") == "added" and r.get("batch_id") else None
+            # "already" (a retry after a lost answer) carries the batch too, so no review is lost
+            batch = r if ok and r.get("batch_id") and r.get("listed_price") else None
             answers.append(Answer(a.line_id, ok, None if ok else
                                   str(r.get("reason") or "refused")[:300], batch))
     return answers

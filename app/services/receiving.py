@@ -24,6 +24,7 @@ from app.core.config import get_settings
 from app.models import (
     BasePrice,
     Branch,
+    Label,
     OnlineProduct,
     OnlineStockSend,
     OnlineVariant,
@@ -294,7 +295,7 @@ def _outstanding(order: SupplyOrder, got: dict[uuid.UUID, int]) -> int:
 
 async def _order(db: AsyncSession, actor: Actor, order_id: uuid.UUID,
                  scope: set[uuid.UUID] | None) -> SupplyOrder:
-    order = await db.get(SupplyOrder, order_id, with_for_update=True)
+    order = await db.get(SupplyOrder, order_id, with_for_update=True, populate_existing=True)
     if order is None or (scope is not None and order.branch_id not in scope):
         raise NotFound("order not found")
     await db.refresh(order, ["lines"])
@@ -461,9 +462,12 @@ async def receive(
 async def _labels_free_of_drafts(db: AsyncSession, lines: list[ReceiptLineIn],
                                  draft_id: uuid.UUID | None) -> None:
     """A QR label reserved by a staff-app draft belongs to that draft (plan 2026-11-27)."""
-    numbers = [labels.parse_number(n) for ln in lines for n in ln.labels]
+    numbers = sorted({labels.parse_number(n) for ln in lines for n in ln.labels})
     if not numbers:
         return
+    # the same lock a phone's scan takes: a hold cannot slip in between this check and linking
+    await db.execute(select(Label.number).where(Label.number.in_(numbers))
+                     .order_by(Label.number).with_for_update())
     q = select(ReceiptDraftLabel.number).where(ReceiptDraftLabel.number.in_(numbers))
     if draft_id is not None:
         q = q.where(ReceiptDraftLabel.draft_id != draft_id)

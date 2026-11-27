@@ -176,6 +176,17 @@ async def test_expiry_rules(client, owner, branch):
                         labels=[qr])).status_code == 201
 
 
+def test_expiry_check_on_29_february():
+    from app.services.drafts import check_expiry
+
+    check_expiry(date(2032, 6, 1), date(2028, 2, 29))  # no error on a leap day
+    import pytest
+
+    from app.services.errors import SupplyError
+    with pytest.raises(SupplyError, match="10 years"):
+        check_expiry(date(2038, 6, 1), date(2028, 2, 29))
+
+
 async def test_one_box_two_expiry_dates_two_batches(client, owner, branch):
     oid, (l1,), _ = await _order(client, owner, branch, [("Yoghurt DR", 4, "60.00")])
     qr = await _labels(client, owner, 4)

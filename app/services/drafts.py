@@ -50,7 +50,7 @@ def check_expiry(expiry: date | None, received: date, mfg: date | None = None,
     if expiry <= received:
         raise SupplyError(f"{name}: the expiry date {expiry} is not after {received}; "
                           "expired goods are not taken into stock")
-    if expiry > received.replace(year=received.year + MAX_EXPIRY_YEARS):
+    if expiry > received + timedelta(days=365 * MAX_EXPIRY_YEARS + 3):  # 29 Feb safe
         raise SupplyError(f"{name}: an expiry more than {MAX_EXPIRY_YEARS} years ahead "
                           "looks like a typing mistake")
     if mfg is not None and (mfg >= expiry or mfg > received):
@@ -70,7 +70,7 @@ async def _order(db: AsyncSession, order_id: uuid.UUID,
 async def open_draft(db: AsyncSession, actor: Actor, order_id: uuid.UUID,
                      scope: set[uuid.UUID] | None) -> ReceiptDraft:
     """The order's open draft, made when there is none (two phones share one)."""
-    order = await db.get(SupplyOrder, order_id, with_for_update=True)
+    order = await db.get(SupplyOrder, order_id, with_for_update=True, populate_existing=True)
     if order is None or (scope is not None and order.branch_id not in scope):
         raise NotFound("order not found")
     quick = order.is_quick_buy and order.status == "submitted"

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import OnlineProduct, OnlineVariant, ProductBarcode
@@ -81,7 +82,18 @@ async def link(db: AsyncSession, actor: Actor, *, raw: str, online_variant_id: u
     item = await _item(db, online_variant_id)
     if item is None:
         raise NotFound("product not found")
-    row = await db.get(ProductBarcode, code, with_for_update=True)
+    # claim it first: two phones linking one new barcode at once -> one insert wins, the
+    # other finds the row below (no unique-key error)
+    claimed = (await db.execute(insert(ProductBarcode).values(
+        barcode=code, online_variant_id=online_variant_id, created_by=actor.user_id,
+        updated_by=actor.user_id).on_conflict_do_nothing().returning(ProductBarcode.barcode))).first()
+    if claimed is not None:
+        await audit.record(db, user_id=actor.user_id, action="barcode.link",
+                           entity="product_barcode", entity_id=code,
+                           after={"online_variant_id": str(online_variant_id)},
+                           ip_address=actor.ip_address)
+        return {"barcode": code, "item": item.as_dict(), "changed": True}
+    row = await db.get(ProductBarcode, code, with_for_update=True, populate_existing=True)
     now = datetime.now(UTC)
     if row is not None:
         if row.online_variant_id == online_variant_id:

@@ -2,6 +2,7 @@
 partner's own item list (price to us + stock) and the customer orders it packs."""
 
 import uuid
+from datetime import date
 from decimal import Decimal
 from typing import Literal
 
@@ -19,7 +20,7 @@ from app.api.deps import (
 )
 from app.core.db import get_db
 from app.models import Branch
-from app.services import partner_requests, partner_sync, partners
+from app.services import partner_books, partner_requests, partner_sync, partners
 from app.services.actors import Actor
 
 router = APIRouter(tags=["fulfilment partner"])
@@ -69,6 +70,19 @@ async def _with_customer_prices(db: AsyncSession, rows: list[dict], *, price_key
                 to_us = r.get(price_key)
                 r["loss"] = bool(r["customer_price"] and to_us
                                  and Decimal(r["customer_price"]) < Decimal(to_us))
+
+
+class TickIn(BaseModel):
+    line_id: uuid.UUID
+    qty: int = Field(ge=0, le=1_000_000)
+    expiry_date: date | None = None  # when staff see it on the pack (optional)
+
+
+class TicksIn(BaseModel):
+    lines: list[TickIn] = Field(default=[], max_length=500)
+
+    def pairs(self) -> list[tuple]:
+        return [(t.line_id, t.qty, t.expiry_date) for t in self.lines]
 
 
 class ItemIn(BaseModel):
@@ -140,6 +154,38 @@ async def staff_requests(branch_id: uuid.UUID | None = None,
                          db: AsyncSession = Depends(get_db)):
     return await partner_requests.staff_list(db, p.branch_scope(), branch_id=branch_id,
                                              status=status, limit=limit, offset=offset)
+
+
+@router.get("/partners/requests/lookup")
+async def lookup_request(code: str = Query(min_length=1, max_length=60),
+                         p: Principal = Depends(require("partners.read")),
+                         db: AsyncSession = Depends(get_db)):
+    """The request a scanned bag slip names (order number or FR number)."""
+    return await partner_books.lookup(db, p.branch_scope(), code)
+
+
+@router.get("/partners/books")
+async def books_status(p: Principal = Depends(require("partners.read")),
+                       db: AsyncSession = Depends(get_db)):
+    """Days that could not be booked yet (e.g. the partner has no price for an item)."""
+    return await partner_books.status(db)
+
+
+@router.post("/partners/requests/{request_id}/tick")
+async def tick_request(request_id: uuid.UUID, body: TicksIn, request: Request,
+                       p: Principal = Depends(require("grn.create")),
+                       db: AsyncSession = Depends(get_db)):
+    return await partner_books.tick(db, _actor(p, request), p.branch_scope(), request_id,
+                                    body.pairs())
+
+
+@router.post("/partners/requests/{request_id}/handover")
+async def handover_request(request_id: uuid.UUID, body: TicksIn, request: Request,
+                           p: Principal = Depends(require("grn.create")),
+                           db: AsyncSession = Depends(get_db)):
+    """Take the bag (only complete: owner F20)."""
+    return await partner_books.handover(db, _actor(p, request), p.branch_scope(), request_id,
+                                        body.pairs())
 
 
 @router.get("/partners/requests/{request_id}")

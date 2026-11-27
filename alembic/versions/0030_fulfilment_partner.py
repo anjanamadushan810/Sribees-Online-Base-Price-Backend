@@ -98,7 +98,13 @@ def upgrade() -> None:
             handed_at timestamptz,
             handed_by uuid REFERENCES users (user_id),
             cancelled_at timestamptz,
-            cancel_reason varchar(200)
+            cancel_reason varchar(200),
+            -- P4: booked in the day's partner order (one Finance PO per day, F18)
+            booked_at timestamptz,
+            supply_order_id uuid REFERENCES supply_orders (order_id),
+            -- the customer order was cancelled / sent back after the bag was handed over
+            order_closed varchar(12) CHECK (order_closed IN ('cancelled', 'rto')),
+            closed_at timestamptz
         )""")
     op.execute("CREATE INDEX fulfilment_requests_open ON fulfilment_requests "
                "(supplier_id, status) WHERE status IN ('new', 'seen', 'ready')")
@@ -118,6 +124,11 @@ def upgrade() -> None:
             price_to_us numeric(12, 2),
             stock_taken integer NOT NULL DEFAULT 0 CHECK (stock_taken >= 0),
             ticked_qty integer NOT NULL DEFAULT 0 CHECK (ticked_qty >= 0),
+            -- P4: the batch the day's receipt put it in, and units that came back to our shelf
+            batch_id uuid REFERENCES stock_batches (batch_id),
+            returned_qty integer NOT NULL DEFAULT 0 CHECK (returned_qty >= 0),
+            expiry_date date,  -- typed at handover when staff see it on the pack
+            CHECK (ticked_qty <= qty AND returned_qty <= qty),
             UNIQUE (request_id, order_item_id)
         )""")
 

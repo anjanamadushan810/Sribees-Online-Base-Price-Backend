@@ -161,7 +161,16 @@ async def _cancel(db, fr: FulfilmentRequest, reason: str) -> None:
 # ---------------------------------------------------------------- the event
 async def apply_event(db: AsyncSession, ev: dict, *, fetch=fetch_order) -> str:
     p = ev.get("payload") or {}
-    if ev.get("type") != "order.status" or not p.get("order_id"):
+    if ev.get("type") not in ("order.status", "order.undelivered") or not p.get("order_id"):
+        return "ignored"
+    handed = await db.scalar(select(FulfilmentRequest).where(
+        FulfilmentRequest.online_order_id == uuid.UUID(str(p["order_id"])),
+        FulfilmentRequest.status == "handed").with_for_update())
+    if handed is not None:  # the bag is ours now: cancels and returns come back to our shelf
+        from app.services import partner_books  # noqa: PLC0415 -- partner_books imports us
+
+        return await partner_books.after_handover(db, handed, ev)
+    if ev.get("type") != "order.status":
         return "ignored"
     online_branch = (p.get("branch") or {}).get("branch_id")
     if not online_branch:

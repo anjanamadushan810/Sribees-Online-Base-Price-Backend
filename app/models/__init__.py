@@ -1156,6 +1156,11 @@ class FulfilmentRequest(Base):
         UUID(as_uuid=True), ForeignKey("users.user_id"))
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancel_reason: Mapped[str | None] = mapped_column(String(200))
+    booked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # P4
+    supply_order_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("supply_orders.order_id"))
+    order_closed: Mapped[str | None] = mapped_column(String(12))  # cancelled | rto
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     lines: Mapped[list["FulfilmentLine"]] = relationship(
         lazy="selectin", order_by="FulfilmentLine.name", cascade="all, delete-orphan")
@@ -1176,3 +1181,7 @@ class FulfilmentLine(Base):
     price_to_us: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     stock_taken: Mapped[int] = mapped_column(Integer, default=0)
     ticked_qty: Mapped[int] = mapped_column(Integer, default=0)
+    batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stock_batches.batch_id"))
+    returned_qty: Mapped[int] = mapped_column(Integer, default=0)
+    expiry_date: Mapped[date | None] = mapped_column(Date)  # typed at handover (optional)

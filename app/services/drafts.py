@@ -150,7 +150,7 @@ async def view(db: AsyncSession, draft: ReceiptDraft, order: SupplyOrder) -> dic
             "expiry_date": ln.expiry_date, "mfg_date": ln.mfg_date,
             "mrp": None if ln.mrp is None else f"{ln.mrp:.2f}",
             "unit_price": None if ln.unit_price is None else f"{ln.unit_price:.2f}",
-            "labels": by_line.get(ln.draft_line_id, []),
+            "labels": by_line.get(ln.draft_line_id, []), "hold": ln.hold,
         } for ln in lines],
         "loose_labels": by_line.get(None, []),
     }
@@ -206,6 +206,7 @@ class DraftLineIn:
     listed_price: Decimal | None = None
     selling_price: Decimal | None = None
     barcode: str | None = None
+    hold: bool = False  # kept aside without QR labels (owner 2026-11-27)
 
 
 async def _resolve(db: AsyncSession, order: SupplyOrder,
@@ -251,10 +252,15 @@ async def add_line(db: AsyncSession, actor: Actor, draft: ReceiptDraft, order: S
     if len(set(numbers)) != len(numbers):
         raise SupplyError(f"{name}: a QR label was scanned twice")
     pieces = body.units + body.free_units
-    if body.weight_kg is None and len(numbers) != pieces:
+    if body.hold:  # owner 2026-11-27: checked and kept aside; QR labels go on later
+        if body.weight_kg is not None:
+            raise SupplyError(f"{name}: weighed goods cannot be held without labels yet")
+        if numbers:
+            raise SupplyError(f"{name}: a part held without QR takes no labels")
+    elif body.weight_kg is None and len(numbers) != pieces:
         raise SupplyError(f"{name}: {pieces} units need {pieces} QR labels, "
                           f"{len(numbers)} scanned")
-    if body.weight_kg is not None and not numbers:
+    if body.weight_kg is not None and not numbers and not body.hold:
         raise SupplyError(f"{name}: scan the QR label on each bag")
     code = barcodes.normalise(body.barcode) if body.barcode else None
     for n in numbers:
@@ -265,7 +271,7 @@ async def add_line(db: AsyncSession, actor: Actor, draft: ReceiptDraft, order: S
         units=body.units, free_units=body.free_units, weight_kg=body.weight_kg,
         expiry_date=body.expiry_date, mfg_date=body.mfg_date, mrp=body.mrp,
         unit_price=body.unit_price, listed_price=body.listed_price,
-        selling_price=body.selling_price, created_by=actor.user_id)
+        selling_price=body.selling_price, hold=body.hold, created_by=actor.user_id)
     db.add(line)
     await db.flush()
     for n in numbers:
@@ -317,7 +323,7 @@ async def finish(db: AsyncSession, actor: Actor, draft: ReceiptDraft, *, receive
             units=ln.units, free_units=ln.free_units, weight_kg=ln.weight_kg,
             expiry_date=ln.expiry_date, mfg_date=ln.mfg_date, mrp=ln.mrp,
             unit_price=ln.unit_price, listed_price=ln.listed_price,
-            selling_price=ln.selling_price,
+            selling_price=ln.selling_price, hold=ln.hold,
             labels=tuple(sorted(of_line.get(ln.draft_line_id, []))))
             for ln in lines])
     await db.execute(delete(ReceiptDraftLabel).where(ReceiptDraftLabel.draft_id == draft.draft_id))

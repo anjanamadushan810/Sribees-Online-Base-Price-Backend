@@ -55,6 +55,7 @@ async def worker(once: bool) -> None:
     from app.core.config import get_settings
     from app.services import (
         finance_link,
+        held,
         online_catalog,
         online_events,
         online_stock,
@@ -115,6 +116,12 @@ async def worker(once: bool) -> None:
                             log.info("online stock: %s", counts)
                     except Exception:  # noqa: BLE001 -- logged, retried next round
                         log.exception("online stock round failed")
+                    try:  # held goods that got their QR labels (owner 2026-11-27)
+                        counts = await held.run_once(sessionmaker, client)
+                        if counts:
+                            log.info("held releases: %s", counts)
+                    except Exception:  # noqa: BLE001 -- logged, retried next round
+                        log.exception("held releases round failed")
                 try:
                     counts = await push.run_once(sessionmaker, client)
                     if counts:

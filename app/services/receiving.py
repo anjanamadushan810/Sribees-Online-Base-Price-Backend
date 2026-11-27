@@ -68,6 +68,9 @@ class ReceiptLineIn:
     # owner 2026-11-26: goods that came without being ordered are added at receiving, but
     # only products we already sell on Online (a new product is made by the super admin)
     online_variant_id: uuid.UUID | None = None
+    # owner 2026-11-27: kept aside WITHOUT QR labels (busy days); in stock and Finance now,
+    # on Online only when labels are stuck on later (app/services/held.py)
+    hold: bool = False
 
 
 async def _unordered(db: AsyncSession, order: SupplyOrder, ln: ReceiptLineIn, n: int, *,
@@ -401,7 +404,8 @@ async def receive(
                           free_units=ln.free_units, qty=c.qty, unit_price=c.price,
                           line_value=c.value, expiry_date=ln.expiry_date, mfg_date=ln.mfg_date,
                           mrp=ln.mrp, batch_id=batch.batch_id, landed_cost=landed,
-                          listed_price=ln.listed_price, selling_price=ln.selling_price)
+                          listed_price=ln.listed_price, selling_price=ln.selling_price,
+                          hold=ln.hold)
         db.add(row)
         got[ol.line_id] = got.get(ol.line_id, 0) + ln.units
         received.append((row, batch))
@@ -443,6 +447,8 @@ async def receive(
     if get_settings().online_stock_in:
         await db.flush()
         for row, _ in received:
+            if row.hold:  # goes to Online when its labels are stuck on (held.release)
+                continue
             db.add(OnlineStockSend(receipt_line_id=row.receipt_line_id,
                                    receipt_id=receipt.receipt_id))
     ordered = sum(ln.units for ln in order.lines)
@@ -511,7 +517,13 @@ async def _check_line(db: AsyncSession, order: SupplyOrder, order_lines: dict, g
         qty = stock.quantity(Decimal(ln.units + ln.free_units), product)
         each = await unit_weight_grams(db, item)
         grams = each * (ln.units + ln.free_units) if each else None
-    if labels_required:
+    if ln.hold:
+        if product.unit == "kg":
+            raise SupplyError(f"{product.name} is kept by weight: weighed goods cannot be held "
+                              "without labels yet")
+        if ln.labels:
+            raise SupplyError(f"{product.name}: a part held without QR takes no labels")
+    elif labels_required:
         pieces = ln.units + ln.free_units
         if product.unit != "kg" and len(ln.labels) != pieces:
             raise SupplyError(f"{product.name}: {pieces} units need {pieces} QR labels, "

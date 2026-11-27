@@ -766,6 +766,30 @@ class ReceiptLine(Base):
     # prices staff set for the shop at receiving (0022); empty = Online keeps its own
     listed_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     selling_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    hold: Mapped[bool] = mapped_column(Boolean, default=False)  # 0029: kept aside without QR
+
+
+class StockRelease(Base):
+    """0029: QR labels stuck on held units; that many go into the shop and Online."""
+
+    __tablename__ = "stock_releases"
+
+    release_id: Mapped[uuid.UUID] = _uuid_pk()
+    receipt_line_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("receipt_lines.receipt_line_id"))
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stock_batches.batch_id"))
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id"))
+    units: Mapped[int] = mapped_column(Integer)
+    send_status: Mapped[str] = mapped_column(String(10), default="off")
+    send_reason: Mapped[str | None] = mapped_column(String(300))
+    send_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class OnlineStockSend(Base):
@@ -949,6 +973,7 @@ class ReceiptDraftLine(Base):
     unit_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 4))
     listed_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     selling_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    hold: Mapped[bool] = mapped_column(Boolean, default=False)  # 0029: kept aside without QR
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.user_id"))
     created_at: Mapped[datetime] = _created()

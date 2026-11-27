@@ -14,7 +14,7 @@ from decimal import Decimal
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Branch, Label, LabelRange, Product, StockBatch
+from app.models import Branch, Label, LabelRange, Product, ReceiptLine, StockBatch
 from app.services import audit, settings
 from app.services.actors import Actor
 from app.services.errors import Conflict, NotFound, SupplyError
@@ -126,7 +126,7 @@ def label_limit(batch: StockBatch, product: Product) -> int:
 
 
 async def link(db: AsyncSession, actor: Actor, *, batch: StockBatch, numbers: list[str],
-               scope: set[uuid.UUID] | None = None) -> LinkResult:
+               scope: set[uuid.UUID] | None = None, held_release: bool = False) -> LinkResult:
     if scope is not None and batch.branch_id not in scope:
         raise NotFound("batch not found")
     if not numbers:
@@ -141,6 +141,11 @@ async def link(db: AsyncSession, actor: Actor, *, batch: StockBatch, numbers: li
         seen.add(n)
     if batch.status != "available":
         raise Conflict(f"batch {batch.batch_no} is {batch.status}")
+    if not held_release and await db.scalar(
+            select(func.count()).select_from(ReceiptLine).where(
+                ReceiptLine.batch_id == batch.batch_id, ReceiptLine.hold.is_(True))):
+        # held goods take labels only through a release, which also tells Online (held.py)
+        raise Conflict(f"batch {batch.batch_no} is held without QR: take it in from Held stock")
     product = await db.get(Product, batch.product_id)
     rows = {row.number: row for row in await db.scalars(
         select(Label).where(Label.number.in_(parsed)).with_for_update())}

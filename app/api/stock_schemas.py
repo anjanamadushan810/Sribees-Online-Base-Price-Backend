@@ -201,6 +201,7 @@ class ReceiptLineIn(BaseModel):
     # the shop's prices, only when staff change them (empty = Online keeps its own)
     listed_price: PriceIn | None = None
     selling_price: PriceIn | None = None
+    hold: bool = False  # kept aside without QR labels (owner 2026-11-27)
 
 
 class ReceiptIn(BaseModel):
@@ -229,6 +230,7 @@ class ReceiptLineOut(ORM):
     mrp: Money | None
     batch_id: uuid.UUID
     landed_cost: Money = 0  # share of the supplier's delivery charge (B2)
+    hold: bool = False  # kept aside without QR labels (0029)
 
 
 class ReceiptOut(ORM):

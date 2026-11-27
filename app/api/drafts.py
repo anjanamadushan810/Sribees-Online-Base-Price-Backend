@@ -42,6 +42,7 @@ class LineIn(BaseModel):
     listed_price: PriceIn | None = None
     selling_price: PriceIn | None = None
     labels: list[str] = Field(default=[], max_length=5000)
+    hold: bool = False  # kept aside without QR labels (owner 2026-11-27)
 
 
 class FinishIn(BaseModel):

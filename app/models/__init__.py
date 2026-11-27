@@ -118,6 +118,8 @@ class Supplier(Base):
     bank_branch: Mapped[str | None] = mapped_column(String(100))
     bank_account_name: Mapped[str | None] = mapped_column(String(150))
     bank_account_no: Mapped[str | None] = mapped_column(String(40))
+    # 0030: 'wholesale' | 'fulfilment_partner' (fills a branch's orders; plan fulfilment-partner)
+    kind: Mapped[str] = mapped_column(String(20), default="wholesale")
 
     users: Mapped[list["SupplierUser"]] = relationship(
         back_populates="supplier", lazy="selectin", order_by="SupplierUser.created_at"
@@ -1045,3 +1047,91 @@ class ReorderRun(Base):
     ran_at: Mapped[datetime] = _created()
     result: Mapped[dict] = mapped_column(JSONB)
 
+
+
+# ================================================================ fulfilment partner (0030)
+class SupplierBranch(Base):
+    """A branch a fulfilment partner serves; it serves no other."""
+
+    __tablename__ = "supplier_branches"
+
+    supplier_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("suppliers.supplier_id"), primary_key=True)
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id"), primary_key=True)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+    created_at: Mapped[datetime] = _created()
+
+
+class OnlineBranchListing(Base):
+    """An Online product a branch lists (catalogue sync, optional `branch_ids`)."""
+
+    __tablename__ = "online_branch_listings"
+
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id"), primary_key=True)
+    online_product_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("online_products.online_product_id"), primary_key=True)
+    synced_at: Mapped[datetime] = _created()
+
+
+class BranchSourcing(Base):
+    """Where a branch gets a product: 'own' stock or a fulfilment 'partner'. No row = own."""
+
+    __tablename__ = "branch_sourcing"
+
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id"), primary_key=True)
+    online_product_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("online_products.online_product_id"), primary_key=True)
+    mode: Mapped[str] = mapped_column(String(8))
+    partner_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("suppliers.supplier_id"))
+    changed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+    changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class PartnerItem(Base):
+    """A partner's price to us and stock count for one pack size at one branch. The
+    partner's own cost is never asked for (F5)."""
+
+    __tablename__ = "partner_items"
+
+    item_id: Mapped[uuid.UUID] = _uuid_pk()
+    supplier_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("suppliers.supplier_id"))
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id"))
+    online_product_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("online_products.online_product_id"))
+    online_variant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("online_variants.online_variant_id"))
+    price_to_us: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    stock_qty: Mapped[int] = mapped_column(Integer, default=0)
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("supplier_users.supplier_user_id"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class PartnerPriceChange(Base):
+    """A price change by the partner: applies at once, staff see it as an alert (F10)."""
+
+    __tablename__ = "partner_price_changes"
+
+    change_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    item_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("partner_items.item_id"))
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id"))
+    old_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    new_price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    changed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("supplier_users.supplier_user_id"))
+    changed_at: Mapped[datetime] = _created()
+    seen_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+    seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

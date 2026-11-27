@@ -9,6 +9,9 @@ supply/catalog with "Authorization: Bearer {ONLINE_SERVICE_TOKEN}" answers
                                  "is_active"}]}],
      "branches": [{"branch_id", "code", "name", "is_active"}]}   # branches: optional
 
+A product may also carry "branch_ids": the Online branches that list it (fulfilment partner,
+migration 0030). When no product carries the key (an older Online) the listings are left alone.
+
 Branches are Online's: a branch missing from the answer is left alone (never deleted or
 switched off by a sync); one we already have by code is linked, not duplicated.
 
@@ -22,13 +25,19 @@ import uuid
 from decimal import Decimal
 
 import httpx
-from sqlalchemy import select, true, update
+from sqlalchemy import delete, select, true, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.matching.text import parse_size
-from app.models import Branch, OnlineProduct, OnlineVariant, SyncState
+from app.models import (
+    Branch,
+    OnlineBranchListing,
+    OnlineProduct,
+    OnlineVariant,
+    SyncState,
+)
 from app.services import audit
 from app.services.errors import SupplyError
 
@@ -174,6 +183,9 @@ async def apply(db: AsyncSession, payload: dict, *, user_id: uuid.UUID | None) -
     value = {"products": total, "deactivated": gone.rowcount}
     if isinstance(payload.get("branches"), list):
         value["branches"] = await apply_branches(db, payload["branches"])
+    listed = await apply_listings(db, products)
+    if listed is not None:
+        value["listings"] = listed
     if state is None:
         db.add(SyncState(key="online_catalog", value=value))
     else:
@@ -182,6 +194,28 @@ async def apply(db: AsyncSession, payload: dict, *, user_id: uuid.UUID | None) -
                        entity="online_catalog", after=value)
     await db.flush()
     return value
+
+
+async def apply_listings(db: AsyncSession, products: list) -> int | None:
+    """Which branch lists which product (per product "branch_ids", Online branch ids). Only
+    the products in this answer that carry the key are rewritten; None = Online sent none."""
+    carrying = [p for p in products if isinstance(p.get("branch_ids"), list)]
+    if not carrying:
+        return None
+    rows = await db.execute(select(Branch.online_branch_id, Branch.branch_id)
+                            .where(Branch.online_branch_id.is_not(None)))
+    ours = {str(o): b for o, b in rows.all()}
+    pids = [uuid.UUID(p["product_id"]) for p in carrying]
+    await db.execute(delete(OnlineBranchListing)
+                     .where(OnlineBranchListing.online_product_id.in_(pids)))
+    count = 0
+    for p in carrying:
+        pid = uuid.UUID(p["product_id"])
+        for bid in {ours[str(o)] for o in p["branch_ids"] if str(o) in ours}:
+            db.add(OnlineBranchListing(branch_id=bid, online_product_id=pid))
+            count += 1
+    await db.flush()
+    return count
 
 
 async def sync(db: AsyncSession, *, user_id: uuid.UUID | None) -> dict:

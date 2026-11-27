@@ -8,6 +8,7 @@ READ_ALL = {
     "matches.read",
     "orders.read",
     "base_prices.read",
+    "partners.read",  # fulfilment partner: sourcing list, share, price alerts (0030)
 }
 
 # Stock (moved from Finance, joint-go-live phase B): receiving, transfers, write-offs,
@@ -33,13 +34,14 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             "stock.approve",
             "settings.write",
             "suppliers.bank",
+            "partners.write",
         }
         | STOCK_WORK
     ),
     # Compares offers, confirms matches, places orders, receives stock.
     "purchasing": frozenset(READ_ALL | STOCK_WORK | {"suppliers.write", "matches.write",
                                                      "online.sync", "orders.create",
-                                                     "products.write"}),
+                                                     "products.write", "partners.write"}),
     # Raises requests (draft orders) for their own branch; sees suppliers.
     "branch_manager": frozenset(READ_ALL | STOCK_WORK | {"orders.request"}),
     # Read-only: price history, orders.

@@ -105,3 +105,8 @@ keep working unchanged.
 
 ## Phases
 P1 schema + sourcing + partner items (backend) · P2 Online `order.placed` + split · P3 partner app mode + customer-price screens (F15) and Online partner-price endpoint · P4 handover + pass-through receipt + Finance · P5 statements + alerts + dashboard share · P6 dev E2E → owner MCQ for prod.
+
+## Status
+| Phase | State |
+|---|---|
+| P1 | Built 2026-11-27 on `feat/fulfilment-partner` (local, not pushed): migration 0030, `app/services/partners.py`, `app/api/partners.py`, catalogue `branch_ids` listings, 12 tests (`tests/test_partners.py`); full suite 287 pass; 0030 replayed up/down twice on PG 18. Online does not send `branch_ids` yet (P2), so `seed` answers "sync first" until then. |

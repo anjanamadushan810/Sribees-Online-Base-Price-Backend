@@ -138,11 +138,19 @@ Reuse the tested purchase path instead of a new money path:
 - **Who hands over:** branch staff (branch_manager has `grn.create`, not `orders.create`):
   the weekly order is created by the system actor, the receipt by the scanning user.
 
-Open owner questions (ask as MCQ before building P4):
-1. One Finance PO per week (recommended) vs one per customer order.
-2. Week boundary (Mon-Sun?) and who closes/pays (accountant in Finance, as now?).
-3. A line that arrives short at handover: the order goes out short (no customer-side short
-   feature yet, F11) or staff phone Nimali — confirm.
+Owner answers (MCQ 2026-11-28, round 5):
+- **F18 One Finance PO per DAY** (owner: "one PO a day is good"), not per order, not per week.
+- **F19 Week = Monday–Sunday; the OWNER approves the weekly payment** (the statement = that
+  week's 7 daily POs).
+- **F20 A short bag is not taken:** the order waits until every line has fully arrived;
+  handover accepts only complete bags (ticks may be saved while waiting).
+
+Design consequence (to verify against Finance before building): the day's handed lines become
+ONE quick-buy-style order at day close (a tested path: PO + approval + receipt + base price),
+received and dispatched to their customer orders in the same step (purchase + COGS), never
+sent to Online's stock. A cancel/return after handover brings goods onto our shelf (held, no
+QR) through the returns path. Finance's 3-way match for a PO built at day close must be read
+in the Finance repo first; P4 = high risk -> fresh-context reviewer.
 
 ## Risk tier
 - **High:** pass-through receipt + statements (money into Finance) → fresh-context reviewer.

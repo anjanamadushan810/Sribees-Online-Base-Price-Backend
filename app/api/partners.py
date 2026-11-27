@@ -18,7 +18,8 @@ from app.api.deps import (
     scoped_branches,
 )
 from app.core.db import get_db
-from app.services import partner_requests, partners
+from app.models import Branch
+from app.services import partner_requests, partner_sync, partners
 from app.services.actors import Actor
 
 router = APIRouter(tags=["fulfilment partner"])
@@ -37,6 +38,37 @@ class BranchIn(BaseModel):
     # F2: also fill the part of an Our Store line the shelf cannot cover (off until the
     # branch's stock in Supply is complete)
     fills_store_shortfall: bool = False
+
+
+class CustomerPriceIn(BaseModel):
+    branch_id: uuid.UUID
+    online_variant_id: uuid.UUID
+    price: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+
+
+async def _with_customer_prices(db: AsyncSession, rows: list[dict], *, price_key: str) -> None:
+    """Add Online's current customer price to each row (and `loss` when it is below the
+    partner's price to us). Best effort: without the link the rows stay as they are."""
+    if not rows or not partner_sync.enabled():
+        return
+    by_branch: dict = {}
+    for r in rows:
+        by_branch.setdefault(r["branch_id"], []).append(r)
+    import httpx  # noqa: PLC0415
+
+    async with httpx.AsyncClient() as client:
+        for bid, group in by_branch.items():
+            branch = await db.get(Branch, uuid.UUID(bid))
+            if branch is None or branch.online_branch_id is None:
+                continue
+            refs = [(uuid.UUID(r["online_product_id"]), uuid.UUID(r["online_variant_id"]))
+                    for r in group]
+            prices = await partner_sync.current_prices(client, branch.online_branch_id, refs)
+            for r, (_p, v) in zip(group, refs, strict=True):
+                r["customer_price"] = prices.get(v)
+                to_us = r.get(price_key)
+                r["loss"] = bool(r["customer_price"] and to_us
+                                 and Decimal(r["customer_price"]) < Decimal(to_us))
 
 
 class ItemIn(BaseModel):
@@ -93,7 +125,9 @@ async def price_changes(branch_id: uuid.UUID | None = None, all: bool = False,
                         p: Principal = Depends(require("partners.read")),
                         db: AsyncSession = Depends(get_db)):
     scope = scoped_branches(p, None)
-    return await partners.price_changes(db, scope, branch_id=branch_id, unseen_only=not all)
+    rows = await partners.price_changes(db, scope, branch_id=branch_id, unseen_only=not all)
+    await _with_customer_prices(db, rows, price_key="price_to_us_now")
+    return rows
 
 
 @router.get("/partners/requests")
@@ -131,8 +165,23 @@ async def my_items(q: str | None = Query(default=None, max_length=100),
                    offset: int = Query(default=0, ge=0),
                    sp: SupplierPrincipal = Depends(current_supplier),
                    db: AsyncSession = Depends(get_db)):
-    return await partners.my_items(db, sp.supplier_id, q=q, branch_id=branch_id,
-                                   limit=limit, offset=offset)
+    out = await partners.my_items(db, sp.supplier_id, q=q, branch_id=branch_id,
+                                  limit=limit, offset=offset)
+    await _with_customer_prices(db, out["items"], price_key="price_to_us")
+    return out
+
+
+@router.put("/supplier/partner/items/customer-price")
+async def set_customer_price(body: CustomerPriceIn, request: Request,
+                             sp: SupplierPrincipal = Depends(current_supplier),
+                             db: AsyncSession = Depends(get_db)):
+    import httpx  # noqa: PLC0415
+
+    async with httpx.AsyncClient() as client:
+        return await partners.set_customer_price(
+            db, client, sp.supplier_id, sp.user.supplier_user_id, branch_id=body.branch_id,
+            online_variant_id=body.online_variant_id, price=body.price,
+            ip_address=client_ip(request))
 
 
 @router.put("/supplier/partner/items")

@@ -1099,6 +1099,7 @@ class PartnerItem(Base):
         UUID(as_uuid=True), ForeignKey("online_variants.online_variant_id"))
     price_to_us: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     stock_qty: Mapped[int] = mapped_column(Integer, default=0)
+    online_stock_sent: Mapped[int | None] = mapped_column(Integer)  # last count Online took
     updated_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("supplier_users.supplier_user_id"))
     updated_at: Mapped[datetime] = mapped_column(
@@ -1113,6 +1114,7 @@ class PartnerPriceChange(Base):
     change_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     item_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("partner_items.item_id"))
+    kind: Mapped[str] = mapped_column(String(10), default="to_us")  # to_us | customer
     branch_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("branches.branch_id"))
     old_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))

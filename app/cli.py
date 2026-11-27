@@ -59,6 +59,7 @@ async def worker(once: bool) -> None:
         online_catalog,
         online_events,
         online_stock,
+        partner_sync,
         push,
         reorder,
     )
@@ -122,6 +123,13 @@ async def worker(once: bool) -> None:
                             log.info("held releases: %s", counts)
                     except Exception:  # noqa: BLE001 -- logged, retried next round
                         log.exception("held releases round failed")
+                if partner_sync.enabled():
+                    try:  # fulfilment partner figures to Online (plan P3)
+                        counts = await partner_sync.run_once(sessionmaker, client)
+                        if counts:
+                            log.info("partner sync: %s", counts)
+                    except Exception:  # noqa: BLE001 -- logged, retried next round
+                        log.exception("partner sync round failed")
                 try:
                     counts = await push.run_once(sessionmaker, client)
                     if counts:

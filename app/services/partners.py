@@ -206,7 +206,7 @@ async def share(db: AsyncSession, branch_id: uuid.UUID, scope: set[uuid.UUID] | 
 async def price_changes(db: AsyncSession, scope: set[uuid.UUID] | None, *,
                         branch_id: uuid.UUID | None = None, unseen_only: bool = True,
                         limit: int = 100) -> list[dict]:
-    stmt = (select(PartnerPriceChange, OnlineProduct, OnlineVariant, Supplier.name)
+    stmt = (select(PartnerPriceChange, OnlineProduct, OnlineVariant, Supplier.name, PartnerItem)
             .join(PartnerItem, PartnerItem.item_id == PartnerPriceChange.item_id)
             .join(OnlineProduct, OnlineProduct.online_product_id == PartnerItem.online_product_id)
             .join(OnlineVariant, OnlineVariant.online_variant_id == PartnerItem.online_variant_id)
@@ -220,12 +220,15 @@ async def price_changes(db: AsyncSession, scope: set[uuid.UUID] | None, *,
         stmt = stmt.where(PartnerPriceChange.seen_at.is_(None))
     rows = (await db.execute(stmt.order_by(PartnerPriceChange.change_id.desc())
                              .limit(limit))).all()
-    return [{"change_id": c.change_id, "branch_id": str(c.branch_id),
+    return [{"change_id": c.change_id, "kind": c.kind, "branch_id": str(c.branch_id),
              "partner_name": pname, "online_product_id": str(p.online_product_id),
+             "online_variant_id": str(v.online_variant_id),
              "name": p.name, "variant": v.name or None,
              "old_price": money(c.old_price), "new_price": money(c.new_price),
+             "price_to_us_now": money(i.price_to_us),
              "rise": c.old_price is not None and c.new_price > c.old_price,
-             "changed_at": c.changed_at, "seen_at": c.seen_at} for c, p, v, pname in rows]
+             "changed_at": c.changed_at, "seen_at": c.seen_at}
+            for c, p, v, pname, i in rows]
 
 
 async def mark_seen(db: AsyncSession, actor: Actor, change_id: int,
@@ -349,3 +352,55 @@ async def update_item(db: AsyncSession, supplier_id: uuid.UUID, supplier_user_id
                            after=after, ip_address=ip_address)
     await db.flush()
     return {"online_variant_id": str(online_variant_id), "branch_id": str(branch_id), **after}
+
+
+async def set_customer_price(db: AsyncSession, client, supplier_id: uuid.UUID,
+                             supplier_user_id: uuid.UUID, *, branch_id: uuid.UUID,
+                             online_variant_id: uuid.UUID, price: Decimal,
+                             ip_address: str | None = None) -> dict:
+    """F15: the partner sets the customer price of one of the branch's Other Products. Never
+    an Our Store product (F17: the branch manager prices those). Applies at once in Online;
+    staff get an alert, red when it is below the partner's price to us (F16)."""
+    from app.services import partner_sync
+
+    if not partner_sync.enabled():
+        raise Conflict("customer prices are not switched on yet")
+    if price is None or price <= 0:
+        raise SupplyError("the price must be above 0")
+    links = await my_links(db, supplier_id)
+    if branch_id not in links:
+        raise Forbidden("you do not serve this branch")
+    variant = await db.get(OnlineVariant, online_variant_id)
+    if variant is None or not variant.is_active:
+        raise NotFound("item not found")
+    listing = await db.get(OnlineBranchListing, (branch_id, variant.online_product_id))
+    if listing is None or listing.sourcing_group not in EXTERNAL:
+        raise Forbidden("the branch prices this product itself")
+    branch = await db.get(Branch, branch_id)
+    ref = {"product_id": str(variant.online_product_id),
+           "variant_id": None if online_variant_id == variant.online_product_id
+           else str(online_variant_id)}
+    before = (await partner_sync.current_prices(
+        client, branch.online_branch_id, [(variant.online_product_id, online_variant_id)]
+    )).get(online_variant_id)
+    await partner_sync.send_customer_price(client, branch.online_branch_id, ref, price)
+    item = await db.scalar(select(PartnerItem).where(
+        PartnerItem.supplier_id == supplier_id, PartnerItem.branch_id == branch_id,
+        PartnerItem.online_variant_id == online_variant_id))
+    if item is None:
+        item = PartnerItem(supplier_id=supplier_id, branch_id=branch_id,
+                           online_product_id=variant.online_product_id,
+                           online_variant_id=online_variant_id, stock_qty=0)
+        db.add(item)
+        await db.flush()
+    db.add(PartnerPriceChange(item_id=item.item_id, kind="customer", branch_id=branch_id,
+                              old_price=Decimal(before) if before else None, new_price=price,
+                              changed_by=supplier_user_id))
+    await audit.record(db, supplier_user_id=supplier_user_id, action="partner.customer_price",
+                       entity="partner_item", entity_id=item.item_id,
+                       before={"customer_price": before},
+                       after={"customer_price": money(price)}, ip_address=ip_address)
+    await db.flush()
+    return {"online_variant_id": str(online_variant_id), "branch_id": str(branch_id),
+            "customer_price": money(price), "price_to_us": money(item.price_to_us),
+            "below_price_to_us": item.price_to_us is not None and price < item.price_to_us}

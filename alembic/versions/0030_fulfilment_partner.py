@@ -9,7 +9,8 @@ Which products a branch carries is decided in SRIBEES Online (branch_inventory.s
 - supplier_branches: the branch a partner serves (one partner per branch)
 - online_branch_listings: which Online products a branch sells, with Online's sourcing group
 - partner_items: per pack size, the partner's price to us and its stock count
-- partner_price_changes: every price change the partner makes (staff alert)
+- partner_price_changes: every price change the partner makes, to us or to customers
+  (staff alert)
 - fulfilment_requests / fulfilment_lines: what one Online order needs from the partner
 
 Nothing existing changes meaning: with no partner linked the system behaves as before (G1/G3).
@@ -55,6 +56,7 @@ def upgrade() -> None:
             online_variant_id uuid NOT NULL REFERENCES online_variants (online_variant_id),
             price_to_us numeric(12, 2) CHECK (price_to_us > 0),
             stock_qty integer NOT NULL DEFAULT 0 CHECK (stock_qty >= 0),
+            online_stock_sent integer,
             updated_by uuid REFERENCES supplier_users (supplier_user_id),
             updated_at timestamptz NOT NULL DEFAULT now(),
             UNIQUE (supplier_id, branch_id, online_variant_id)
@@ -63,6 +65,7 @@ def upgrade() -> None:
         CREATE TABLE partner_price_changes (
             change_id bigserial PRIMARY KEY,
             item_id uuid NOT NULL REFERENCES partner_items (item_id),
+            kind varchar(10) NOT NULL DEFAULT 'to_us' CHECK (kind IN ('to_us', 'customer')),
             branch_id uuid NOT NULL REFERENCES branches (branch_id),
             old_price numeric(12, 2),
             new_price numeric(12, 2) NOT NULL,

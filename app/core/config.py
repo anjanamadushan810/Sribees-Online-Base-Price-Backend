@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     # Add received goods to the shop's stock (POST /internal/supply/receipts; Online must
     # have SUPPLY_STOCK_IN_ENABLED). Receipts saved while this is off are never sent.
     online_stock_in: bool = False
+    # Fulfilment partner (plan P3): send the partner's stock counts, its customer prices and
+    # whether a branch's partner is working to Online (Online must have
+    # SUPPLY_PARTNER_ENABLED). Off = the partner still gets its orders; Online's figures for
+    # Other Products stay as staff set them.
+    online_partner_sync: bool = False
     # Automatic draft orders: the hour (Sri Lanka) of the daily run; -1 = no daily run.
     reorder_daily_hour: int = Field(default=7, ge=-1, le=23)
     # Pack scan (phase E): SHA-256 of the token Online presents on /internal/online/*

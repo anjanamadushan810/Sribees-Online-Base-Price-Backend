@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from app.services import reorder
 from tests.conftest import make_branch, sign_in
-from tests.stock_helpers import D, fresh_supplier
+from tests.stock_helpers import EXP, D, fresh_supplier
 from tests.test_supplier_auth import settings_override
 
 ON = {"online_api_url": "http://online.test", "online_service_token": "t" * 32}
@@ -66,7 +66,8 @@ async def _bought(client, owner, branch, supplier, item, price):
     r = await client.post("/quick-buys", headers=owner.headers, json={
         "supplier_id": supplier["supplier_id"], "branch_id": str(branch),
         "received_date": D("2026-11-25"),
-        "lines": [{"online_variant_id": str(item), "units": 1, "unit_price": price}]})
+        "lines": [{"online_variant_id": str(item), "units": 1, "unit_price": price,
+                   "expiry_date": EXP}]})
     assert r.status_code == 201, r.text
 
 

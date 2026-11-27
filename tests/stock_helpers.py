@@ -12,7 +12,7 @@ plan, phase B: "the moved Finance stock tests pass in Supply unchanged except im
 
 import secrets
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select, text
@@ -21,6 +21,9 @@ from sqlalchemy import select, text
 # journals must lie within the last 90 days, so every test date moves with today: D()
 # keeps the same distance from 2026-11-26 (2026-10-02 = 55 days ago, whenever it runs).
 ANCHOR = date(2026, 11, 26)
+
+# an expiry date that suits every test receipt (required on every line, owner 2026-11-27)
+EXP = str(date.today() + timedelta(days=400))
 
 
 def D(day: str) -> str:  # noqa: N802 -- reads like a date literal in the tests
@@ -123,6 +126,9 @@ async def approved_order(owner, supplier, branch, lines, day=None):
 
 async def receive(client, who, order_id, lines, day=None, **extra):
     day = day or D("2026-10-02")
+    # expiry is required on every line (owner 2026-11-27): a year ahead unless the test says
+    far = str(date.fromisoformat(day) + timedelta(days=365))
+    lines = [{"expiry_date": far, **ln} for ln in lines]
     r = await client.post(f"/orders/{order_id}/receipts", headers=who.headers,
                           json={"received_date": day, "lines": lines, **extra})
     return r

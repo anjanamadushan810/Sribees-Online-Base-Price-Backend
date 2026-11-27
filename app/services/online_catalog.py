@@ -107,6 +107,15 @@ async def apply_branches(db: AsyncSession, branches: list) -> dict:
     return out
 
 
+def _days(v) -> int | None:
+    """Online's expiry alert days (1..365); anything else = the default."""
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    return n if 1 <= n <= 365 else None
+
+
 async def apply(db: AsyncSession, payload: dict, *, user_id: uuid.UUID | None) -> dict:
     products = payload.get("products")
     if not isinstance(products, list):
@@ -127,6 +136,7 @@ async def apply(db: AsyncSession, payload: dict, *, user_id: uuid.UUID | None) -
             is_active=bool(p.get("is_active", True)),
             image_url=_image(p.get("image_url")),
             weight_grams=_weight(p.get("weight_grams")),
+            expiry_alert_days=_days(p.get("expiry_alert_days")),
         )
         stmt = insert(OnlineProduct).values(online_product_id=pid, **values)
         await db.execute(stmt.on_conflict_do_update(

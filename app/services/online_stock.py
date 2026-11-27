@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
 from app.models import Branch, OnlineStockSend, OnlineVariant, Product, Receipt, ReceiptLine
-from app.services import audit
+from app.services import audit, price_reviews
 from app.services.errors import Conflict, NotFound, SupplyError
 
 CENT = Decimal("0.01")
@@ -48,6 +48,7 @@ class Arrived:
     listed_price: Decimal | None = None  # typed at receiving; None = keep Online's
     selling_price: Decimal | None = None
     expiry_date: date | None = None
+    mrp: Decimal | None = None  # printed on this delivery's packs (owner 2026-11-27)
 
 
 def payload_line(a: Arrived) -> dict:
@@ -72,6 +73,8 @@ def payload_line(a: Arrived) -> dict:
         out["selling_price"] = str(a.selling_price)
     if a.expiry_date is not None:
         out["expires_on"] = a.expiry_date.isoformat()
+    if a.mrp is not None:
+        out["mrp"] = str(a.mrp.quantize(CENT, rounding=ROUND_HALF_UP))
     return out
 
 
@@ -80,6 +83,7 @@ class Answer:
     line_id: uuid.UUID
     sent: bool  # Online holds this line's stock (added now, or already before)
     reason: str | None = None  # why Online refused it
+    batch: dict | None = None  # the new Online batch and its prices, when one was made
 
 
 async def _post(client: httpx.AsyncClient, path: str, body: dict) -> dict:
@@ -115,8 +119,9 @@ async def send(client: httpx.AsyncClient, online_branch_id: uuid.UUID, receipt_n
             if r is None:
                 raise SupplyError("SRIBEESonline did not answer for every line")
             ok = r.get("status") in ("added", "already")
+            batch = r if r.get("status") == "added" and r.get("batch_id") else None
             answers.append(Answer(a.line_id, ok, None if ok else
-                                  str(r.get("reason") or "refused")[:300]))
+                                  str(r.get("reason") or "refused")[:300], batch))
     return answers
 
 
@@ -173,7 +178,7 @@ async def _send_receipt(db: AsyncSession, client: httpx.AsyncClient,
             free_units=line.free_units, value=line.line_value + line.landed_cost,
             weight_kg=line.qty if product.unit == "kg" else None,
             listed_price=line.listed_price, selling_price=line.selling_price,
-            expiry_date=line.expiry_date))
+            expiry_date=line.expiry_date, mrp=line.mrp))
     if not lines:
         return counts
     try:
@@ -183,10 +188,13 @@ async def _send_receipt(db: AsyncSession, client: httpx.AsyncClient,
             settle(a.line_id, "pending", str(exc)[:300])
         counts["waiting"] = len(lines)
         return counts
+    by_line = {a.line_id: a for a in lines}
     for a in answers:
         status = "sent" if a.sent else "refused"
         settle(a.line_id, status, a.reason)
         counts[status] = counts.get(status, 0) + 1
+        if a.batch is not None:
+            await price_reviews.note(db, receipt, by_line[a.line_id], a.batch)
     return counts
 
 

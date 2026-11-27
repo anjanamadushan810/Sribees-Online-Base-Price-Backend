@@ -6,7 +6,7 @@ from decimal import Decimal
 from sqlalchemy import select
 
 from tests.conftest import sign_in
-from tests.stock_helpers import D, fresh_supplier
+from tests.stock_helpers import EXP, D, fresh_supplier
 from tests.test_quick_buy import online_item
 
 
@@ -15,7 +15,8 @@ async def _bought(client, owner, branch, item, units=3, price="100.00"):
     r = await client.post("/quick-buys", headers=owner.headers, json={
         "supplier_id": supplier["supplier_id"], "branch_id": str(branch),
         "received_date": D("2026-11-18"),
-        "lines": [{"online_variant_id": item, "units": units, "unit_price": price}]})
+        "lines": [{"online_variant_id": item, "units": units, "unit_price": price,
+                   "expiry_date": EXP}]})
     assert r.status_code == 201, r.text
     return r.json()["receipt"]["lines"][0]["batch_id"]
 

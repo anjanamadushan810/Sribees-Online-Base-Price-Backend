@@ -47,7 +47,8 @@ async def test_a_short_delivery_closes_the_order(client, owner, branch):
     # more than was ordered is refused; tea needs its expiry
     r = await receive(client, owner, oid, [{"order_line_id": jam_line, "units": 11}])
     assert r.status_code == 422 and "only 10 of 10" in r.json()["detail"]
-    r = await receive(client, owner, oid, [{"order_line_id": tea_line, "units": 5}])
+    r = await receive(client, owner, oid, [{"order_line_id": tea_line, "units": 5,
+                                            "expiry_date": None}])
     assert r.status_code == 422 and "expiry" in r.json()["detail"]
 
     # 8 of 10 jars and 2 free, no tea; the invoice comes with the goods

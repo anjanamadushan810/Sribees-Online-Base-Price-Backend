@@ -9,13 +9,16 @@ from sqlalchemy.exc import DBAPIError
 from app.api import (
     admin,
     auth,
+    barcodes,
     catalog,
     dashboard,
+    drafts,
     finance_internal,
     labels,
     online_catalog,
     online_internal,
     orders,
+    price_reviews,
     quick_buy,
     receiving,
     reorder,
@@ -94,6 +97,9 @@ def create_app() -> FastAPI:
     app.include_router(stock.router)
     app.include_router(stock_products.router)
     app.include_router(labels.router)
+    app.include_router(barcodes.router)
+    app.include_router(drafts.router)
+    app.include_router(price_reviews.router)
     app.include_router(online_internal.router)
     app.include_router(quick_buy.router)
     app.include_router(receiving.router)

@@ -30,6 +30,7 @@ from app.models import (
     OutboxEvent,
     Product,
     Receipt,
+    ReceiptDraftLabel,
     ReceiptLine,
     Supplier,
     SupplyOrder,
@@ -312,7 +313,13 @@ async def receive(
     lines: list[ReceiptLineIn],
     transport_charge: Decimal | None = None,
     scope: set[uuid.UUID] | None = None,
+    split_lines: bool = False,
+    draft_id: uuid.UUID | None = None,
 ) -> Receipt:
+    """split_lines (a staff-app draft, plan 2026-11-27): one order line may come on several
+    receipt lines (one box with two expiry dates = two batches); their units together stay
+    within what is due. draft_id: the draft being finished, whose reserved QR labels are
+    this receipt's own; a label reserved by any other draft is refused."""
     order = await _order(db, actor, order_id, scope)
     supplier = await db.get(Supplier, order.supplier_id)
     quick = order.is_quick_buy and order.status == "submitted"  # goods already in hand
@@ -334,8 +341,9 @@ async def receive(
         raise SupplyError("nothing received")
     named = [ln.order_line_id for ln in lines if ln.order_line_id is not None]
     extra = [ln.online_variant_id for ln in lines if ln.order_line_id is None]
-    if len(set(named)) != len(named) or len(set(extra)) != len(extra):
+    if not split_lines and (len(set(named)) != len(named) or len(set(extra)) != len(extra)):
         raise SupplyError("an order line appears twice on the receipt")
+    await _labels_free_of_drafts(db, lines, draft_id)
     if invoice_no is not None and not invoice_no.strip():
         invoice_no = None
     branch = await db.get(Branch, order.branch_id)
@@ -343,9 +351,16 @@ async def receive(
         raise SupplyError("goods are received at an active branch that holds stock")
 
     added = []
+    extra_line: dict[uuid.UUID, uuid.UUID] = {}  # a product that came unordered -> its new line
     for n, ln in enumerate(lines, start=1):
-        if ln.order_line_id is None:
-            ln, _ = await _unordered(db, order, ln, n, write=True)
+        if ln.order_line_id is None and ln.online_variant_id in extra_line:
+            ln = replace(ln, order_line_id=extra_line[ln.online_variant_id])
+        elif ln.order_line_id is None:
+            total = sum(x.units for x in lines if x.order_line_id is None
+                        and x.online_variant_id == ln.online_variant_id)
+            ln, _ = await _unordered(db, order, replace(ln, units=total), n, write=True)
+            ln = replace(ln, units=lines[n - 1].units)
+            extra_line[lines[n - 1].online_variant_id] = ln.order_line_id
         added.append(ln)
     lines = added
     await db.refresh(order, ["lines"])
@@ -356,9 +371,11 @@ async def receive(
     labels_required = await labels.required(db)
 
     checked: list[_Checked] = []
+    running = dict(got)  # split lines: each one sees what the lines before it took
     for n, ln in enumerate(lines, start=1):
-        checked.append(await _check_line(db, order, order_lines, got, ln, n, received_date,
+        checked.append(await _check_line(db, order, order_lines, running, ln, n, received_date,
                                          labels_required))
+        running[ln.order_line_id] = running.get(ln.order_line_id, 0) + ln.units
     shares = _transport(actor, charge, checked)
 
     receipt = Receipt(
@@ -441,6 +458,20 @@ async def receive(
     return receipt
 
 
+async def _labels_free_of_drafts(db: AsyncSession, lines: list[ReceiptLineIn],
+                                 draft_id: uuid.UUID | None) -> None:
+    """A QR label reserved by a staff-app draft belongs to that draft (plan 2026-11-27)."""
+    numbers = [labels.parse_number(n) for ln in lines for n in ln.labels]
+    if not numbers:
+        return
+    q = select(ReceiptDraftLabel.number).where(ReceiptDraftLabel.number.in_(numbers))
+    if draft_id is not None:
+        q = q.where(ReceiptDraftLabel.draft_id != draft_id)
+    taken = (await db.scalars(q.limit(1))).first()
+    if taken:
+        raise Conflict(f"label {taken} is held by a delivery being received in the staff app")
+
+
 async def _check_line(db: AsyncSession, order: SupplyOrder, order_lines: dict, got: dict,
                       ln: ReceiptLineIn, n: int, received_date: date,
                       labels_required: bool) -> _Checked:
@@ -485,6 +516,8 @@ async def _check_line(db: AsyncSession, order: SupplyOrder, order_lines: dict, g
                               f"{len(ln.labels)} scanned")
         if product.unit == "kg" and not ln.labels:
             raise SupplyError(f"{product.name}: scan the QR label on each bag")
+    from app.services.drafts import check_expiry  # noqa: PLC0415 -- drafts imports us
+    check_expiry(ln.expiry_date, received_date, ln.mfg_date, product.name)
     if ln.mfg_date and ln.expiry_date and ln.mfg_date >= ln.expiry_date:
         raise SupplyError(f"{product.name}: the expiry is not after the manufacture date")
     if ln.mfg_date and ln.mfg_date > received_date:

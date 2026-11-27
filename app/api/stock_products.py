@@ -25,7 +25,7 @@ from app.api.stock_schemas import (
 )
 from app.core.db import get_db
 from app.models import Label, Product, Receipt, ReceiptPhoto, Setting, StockBatch, SupplyOrder
-from app.services import audit, receiving, settings, stock
+from app.services import audit, expiry, receiving, settings, stock
 from app.services.actors import Actor
 
 router = APIRouter(tags=["stock"])
@@ -150,6 +150,16 @@ async def update_product(
 
 
 # ---------------------------------------------------------------- stock
+@router.get("/stock/expiring")
+async def expiring(
+    branch_id: uuid.UUID | None = None,
+    p: Principal = Depends(require("stock.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Batches with stock that are expired or within their product's alert days."""
+    return await expiry.expiring(db, scoped_branches(p, branch_id))
+
+
 @router.get("/stock/batches", response_model=list[BatchOut])
 async def list_batches(
     branch_id: uuid.UUID | None = None,

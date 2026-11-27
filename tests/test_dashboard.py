@@ -4,7 +4,7 @@ import uuid
 from decimal import Decimal
 
 from tests.conftest import make_branch, sign_in
-from tests.stock_helpers import D, fresh_supplier
+from tests.stock_helpers import EXP, D, fresh_supplier
 from tests.test_online_catalog import CHERAMY_75
 from tests.test_orders import line, new_order, shop  # noqa: F401  (fixture)
 
@@ -98,7 +98,8 @@ async def test_base_price_insight_finds_a_saving(client, owner, branch, shop):  
         r = await client.post("/quick-buys", headers=owner.headers, json={
             "supplier_id": sup["supplier_id"], "branch_id": str(branch),
             "received_date": D("2026-11-25"),
-            "lines": [{"online_variant_id": shop["soap"], "units": 10, "unit_price": price}]})
+            "lines": [{"online_variant_id": shop["soap"], "units": 10, "unit_price": price,
+                       "expiry_date": EXP}]})
         assert r.status_code == 201, r.text
     body = (await client.get("/dashboard/base-price-insight", headers=owner.headers)).json()
     item = next(i for i in body["can_save"] if i["online_product_id"] == str(CHERAMY_75))
@@ -113,7 +114,8 @@ async def test_a_bill_price_jump_is_flagged(client, owner, branch, shop):  # noq
     for day, price in ((D("2026-11-20"), "100.00"), (D("2026-11-25"), "115.00")):
         r = await client.post("/quick-buys", headers=owner.headers, json={
             "supplier_id": sup["supplier_id"], "branch_id": str(branch), "received_date": day,
-            "lines": [{"online_variant_id": shop["coke"], "units": 5, "unit_price": price}]})
+            "lines": [{"online_variant_id": shop["coke"], "units": 5, "unit_price": price,
+                       "expiry_date": EXP}]})
         assert r.status_code == 201, r.text
     assert row(await today(client, owner), "price_jumps")["count"] == before + 1
     body = (await client.get("/dashboard/price-changes", headers=owner.headers,
@@ -136,7 +138,8 @@ async def test_transport_is_not_a_price_jump(client, owner, branch, shop):  # no
         r = await client.post("/quick-buys", headers=owner.headers, json={
             "supplier_id": sup["supplier_id"], "branch_id": str(branch), "received_date": day,
             "transport_charge": charge,
-            "lines": [{"online_variant_id": shop["coke"], "units": 5, "unit_price": "100.00"}]})
+            "lines": [{"online_variant_id": shop["coke"], "units": 5, "unit_price": "100.00",
+                       "expiry_date": EXP}]})
         assert r.status_code == 201, r.text
     assert r.json()["receipt"]["total"] == "600.00"
     assert row(await today(client, owner), "price_jumps")["count"] == before

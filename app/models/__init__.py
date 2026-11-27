@@ -286,6 +286,7 @@ class OnlineProduct(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     image_url: Mapped[str | None] = mapped_column(String(500))  # main photo (migration 0020)
     weight_grams: Mapped[int | None] = mapped_column(Integer)  # courier weight (0022)
+    expiry_alert_days: Mapped[int | None] = mapped_column(Integer)  # from Online (0028)
     synced_at: Mapped[datetime] = _created()
 
 
@@ -506,8 +507,6 @@ class Product(Base):
     weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
 
 
-
-
 class StockBatch(Base):
     __tablename__ = "stock_batches"
 
@@ -535,8 +534,6 @@ class StockBatch(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-
-
 class StockMove(Base):
     __tablename__ = "stock_moves"
 
@@ -557,8 +554,6 @@ class StockMove(Base):
         UUID(as_uuid=True), ForeignKey("users.user_id")
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
 
 
 class StockTransfer(Base):
@@ -897,6 +892,106 @@ class ReceiptPhoto(Base):
     uploaded_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.user_id"))
     uploaded_at: Mapped[datetime] = _created()
+
+
+class ProductBarcode(Base):
+    """0025: a pack's printed EAN/UPC -> one of our Online pack sizes."""
+
+    __tablename__ = "product_barcodes"
+
+    barcode: Mapped[str] = mapped_column(String(14), primary_key=True)
+    online_variant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("online_variants.online_variant_id"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+    created_at: Mapped[datetime] = _created()
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+    updated_at: Mapped[datetime] = _created()
+
+
+# ======================================================================= receipt drafts (0026)
+class ReceiptDraft(Base):
+    __tablename__ = "receipt_drafts"
+
+    draft_id: Mapped[uuid.UUID] = _uuid_pk()
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("supply_orders.order_id"))
+    status: Mapped[str] = mapped_column(String(10), default="open")
+    receipt_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("receipts.receipt_id"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = _created()
+    closed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ReceiptDraftLine(Base):
+    __tablename__ = "receipt_draft_lines"
+
+    draft_line_id: Mapped[uuid.UUID] = _uuid_pk()
+    draft_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("receipt_drafts.draft_id"))
+    order_line_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("supply_order_lines.line_id"))
+    online_variant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("online_variants.online_variant_id"))
+    barcode: Mapped[str | None] = mapped_column(String(14))
+    units: Mapped[int] = mapped_column(Integer)
+    free_units: Mapped[int] = mapped_column(Integer, default=0)
+    weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(14, 3))
+    expiry_date: Mapped[date] = mapped_column(Date)
+    mfg_date: Mapped[date | None] = mapped_column(Date)
+    mrp: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    unit_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 4))
+    listed_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    selling_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+    created_at: Mapped[datetime] = _created()
+
+
+class ReceiptDraftLabel(Base):
+    __tablename__ = "receipt_draft_labels"
+
+    number: Mapped[str] = mapped_column(String(10), ForeignKey("labels.number"),
+                                        primary_key=True)
+    draft_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("receipt_drafts.draft_id"))
+    draft_line_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("receipt_draft_lines.draft_line_id", ondelete="SET NULL"))
+    reserved_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+    reserved_at: Mapped[datetime] = _created()
+
+
+class PriceReview(Base):
+    """0027: a delivered batch's new shop price, waiting for the branch manager."""
+
+    __tablename__ = "price_reviews"
+
+    receipt_line_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("receipt_lines.receipt_line_id"), primary_key=True)
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id"))
+    online_batch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    online_product_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    online_variant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    base_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 4))
+    old_listed_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    old_selling_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    listed_price: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    selling_price: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    status: Mapped[str] = mapped_column(String(10), default="waiting")
+    final_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    reason: Mapped[str | None] = mapped_column(String(300))
+    reviewed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _created()
 
 
 class MainSupplier(Base):

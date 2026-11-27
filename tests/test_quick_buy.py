@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app.services import labels as label_svc
 from tests.conftest import sign_in
-from tests.stock_helpers import D, fresh_supplier
+from tests.stock_helpers import EXP, D, fresh_supplier
 from tests.test_supplier_auth import settings_override
 
 
@@ -43,8 +43,9 @@ async def test_a_market_buy_is_received_in_one_step(client, owner, branch):
     body = {"supplier_id": supplier["supplier_id"], "branch_id": str(branch),
             "received_date": D("2026-11-25"), "bill_no": "M-12", "bill_total": "530.00",
             "lines": [{"online_variant_id": coconut, "units": 3, "unit_price": "110.00",
-                       "labels": nums},
-                      {"online_variant_id": onion, "units": 1, "unit_price": "200.00"}]}
+                       "labels": nums, "expiry_date": EXP},
+                      {"online_variant_id": onion, "units": 1, "unit_price": "200.00",
+                       "expiry_date": EXP}]}
     with settings_override(order_approval="finance"):
         r = await client.post("/quick-buys", headers=owner.headers, json=body)
     assert r.status_code == 201, r.text
@@ -76,7 +77,8 @@ async def test_who_and_which_supplier(client, owner, branch):
     supplier = await fresh_supplier(client, owner)
     body = {"supplier_id": supplier["supplier_id"], "branch_id": str(branch),
             "received_date": D("2026-11-25"),
-            "lines": [{"online_variant_id": item, "units": 1, "unit_price": "50.00"}]}
+            "lines": [{"online_variant_id": item, "units": 1, "unit_price": "50.00",
+                       "expiry_date": EXP}]}
     acc = await sign_in(client, "accountant")
     assert (await client.post("/quick-buys", headers=acc.headers, json=body)).status_code == 403
     async with get_sessionmaker()() as s, s.begin():
@@ -100,7 +102,8 @@ async def test_a_bill_from_last_week_keeps_its_date(client, owner, branch):
     supplier = await fresh_supplier(client, owner)
     body = {"supplier_id": supplier["supplier_id"], "branch_id": str(branch),
             "received_date": D("2026-11-18"), "bill_no": "OLD-1",
-            "lines": [{"online_variant_id": item, "units": 2, "unit_price": "40.00"}]}
+            "lines": [{"online_variant_id": item, "units": 2, "unit_price": "40.00",
+                       "expiry_date": EXP}]}
     r = await client.post("/quick-buys", headers=owner.headers, json=body)
     assert r.status_code == 201, r.text
     assert r.json()["receipt"]["received_date"] == D("2026-11-18")

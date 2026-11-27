@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select, text
 
 from tests.conftest import make_branch, sign_in
-from tests.stock_helpers import D
+from tests.stock_helpers import EXP, D
 from tests.test_catalog import bearer
 from tests.test_online_catalog import CHERAMY_75, COKE_15, PAYLOAD
 from tests.test_supplier_auth import signed_in_supplier
@@ -109,7 +109,8 @@ async def test_order_flow_and_base_price(client, owner, purchasing, shop):
         (await s.get(OnlineProduct, CHERAMY_75)).weight_grams = 80
     r = await client.post(f"/orders/{oid}/receipts", headers=owner.headers, json={
         "received_date": D("2026-11-26"), "invoice_no": "N-1",
-        "lines": [{"order_line_id": soap_line["line_id"], "units": 450, "unit_price": "120"}]})
+        "lines": [{"order_line_id": soap_line["line_id"], "units": 450, "unit_price": "120",
+                   "expiry_date": EXP}]})
     assert r.status_code == 201, r.text
     assert r.json()["lines"][0]["unit_price"] == "120.00"
     # only the soap came: it carries the whole charge, 120 + 300/450 a piece

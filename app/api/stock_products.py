@@ -212,7 +212,10 @@ async def receive_goods(
         invoice_no=body.invoice_no, invoice_total=body.invoice_total, notes=body.notes,
         transport_charge=body.transport_charge,
         lines=[receiving.ReceiptLineIn(**ln.model_dump()) for ln in body.lines],
-        scope=scoped_branches(p, None))
+        scope=scoped_branches(p, None),
+        # owner 2026-11-27: one ordered product may come in parts with their own price and
+        # expiry (30 + 18 of 48); each part is its own batch, together within what is due
+        split_lines=True)
     names = await _names(db, Product, Product.product_id, [ln.product_id for ln in receipt.lines])
     return _receipt_out(receipt, names)
 

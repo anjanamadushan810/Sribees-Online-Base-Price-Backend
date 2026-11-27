@@ -424,3 +424,42 @@ async def test_the_bill_photo_is_kept_with_the_receipt(client, owner, accountant
     got = await client.get(url, headers=accountant.headers)
     assert got.status_code == 200 and got.content == jpeg
     assert got.headers["content-type"] == "image/jpeg"
+
+
+async def test_one_order_line_split_into_two_batches(client, owner, branch):
+    """Owner 2026-11-27: 48 ordered came as 30 with one MRP/price/expiry and 18 with
+    another. Each part is its own receipt line, batch and base price; together they stay
+    within what is due."""
+    supplier = await fresh_supplier(client, owner)
+    jam = await new_product(client, owner, name="Jam")
+    oid, (jam_line,) = await approved_order(owner, supplier, branch, [(jam, 48, "100.00")])
+
+    r = await receive(client, owner, oid, [
+        {"order_line_id": jam_line, "units": 30},
+        {"order_line_id": jam_line, "units": 20}])
+    assert r.status_code == 422 and "only 18 of 48" in r.json()["detail"]
+
+    r = await receive(client, owner, oid, [
+        {"order_line_id": jam_line, "units": 30, "unit_price": "100.00", "mrp": "150.00",
+         "expiry_date": "2027-03-01"},
+        {"order_line_id": jam_line, "units": 18, "free_units": 2, "unit_price": "110.00",
+         "mrp": "160.00", "expiry_date": "2027-06-01"}])
+    assert r.status_code == 201, r.text
+    got = r.json()
+    assert got["total"] == "4980.00"  # 30 x 100 + 18 x 110
+    assert [(ln["units"], ln["free_units"], ln["unit_price"], ln["expiry_date"])
+            for ln in got["lines"]] == [(30, 0, "100.00", "2027-03-01"),
+                                        (18, 2, "110.00", "2027-06-01")]
+    batches = (await client.get("/stock/batches", headers=owner.headers,
+                                params={"product_id": jam["product_id"]})).json()
+    assert sorted((b["expiry_date"], b["qty_on_hand"], b["unit_cost"]) for b in batches) == [
+        ("2027-03-01", "30", "100.0000"), ("2027-06-01", "20", "99.0000")]  # 1980 / 20
+    order = (await client.get(f"/orders/{oid}", headers=owner.headers)).json()
+    assert order["status"] == "received" and len(order["lines"]) == 1
+    from app.core.db import get_sessionmaker
+    from app.models import BasePrice
+
+    async with get_sessionmaker()() as s:
+        prices = await s.scalars(select(BasePrice.bill_price).where(
+            BasePrice.order_id == uuid.UUID(oid)))
+        assert sorted(prices) == [Decimal("100.00"), Decimal("110.00")]

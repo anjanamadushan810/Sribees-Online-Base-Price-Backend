@@ -116,6 +116,34 @@ were removed before anything was pushed. F3 becomes: staff classify in Online ad
 ### Staff app / web
 - "Partner handover" scan screen; sourcing switch (own/partner) per product; partner share % on the dashboard; price-change alerts.
 
+## P4/P5 design (written 11-27 night; NOT built: high risk, needs owner answers + a fresh reviewer)
+
+Reuse the tested purchase path instead of a new money path:
+
+- **One open partner order per partner, branch and week** (a `SupplyOrder`, like a quick
+  buy: our pack sizes, price = the partner's `price_to_us` snapshot on the request line).
+  Finance gets ONE PO per week (approval rule as for any PO), which is also the weekly
+  statement the partner is paid against (F9).
+- **Handover = a receipt on that week's order** (lines added at receiving, migration 0023):
+  staff scan the bag's slip (order number / FR no), tick what arrived, and Supply receives it
+  as a normal receipt (batch at `price_to_us`, base price written, Finance `receipt.posted`).
+  The units are **not** sent to Online (Online already counted them as the partner's stock).
+  `fulfilment_lines.batch_id` remembers where they went.
+- **Delivered order** (`order.status` delivered) → those batches are dispatched to the order
+  (stock move + COGS journal, same as `picks.consume`).
+- **Cancelled / returned after handover** → the goods are ours now and on our shelf: they stay
+  as held stock (no QR) that staff label and release with the existing held flow.
+- **Statement (P5):** the week's order = handed requests with totals; close it at week end;
+  Finance's 3-way match + the accountant's payment as for any supplier.
+- **Who hands over:** branch staff (branch_manager has `grn.create`, not `orders.create`):
+  the weekly order is created by the system actor, the receipt by the scanning user.
+
+Open owner questions (ask as MCQ before building P4):
+1. One Finance PO per week (recommended) vs one per customer order.
+2. Week boundary (Mon-Sun?) and who closes/pays (accountant in Finance, as now?).
+3. A line that arrives short at handover: the order goes out short (no customer-side short
+   feature yet, F11) or staff phone Nimali — confirm.
+
 ## Risk tier
 - **High:** pass-through receipt + statements (money into Finance) → fresh-context reviewer.
 - **Medium:** order splitting, stock push (wrong availability = oversold order).
@@ -140,3 +168,5 @@ P1 schema + sourcing + partner items (backend) · P2 Online `order.placed` + spl
 |---|---|
 | P1 | Built 2026-11-27 (local `feat/fulfilment-partner`): partner kind, one partner per branch, partner items + price alerts, staff sourcing view/share. |
 | P2 | Built 2026-11-27 night (local): sourcing mirrored from Online `sourcing_group`; fulfilment requests from order events (create / follow edits / cancel / ready), partner app request routes, push texts. Supply suite 295 pass; 0030 replayed twice on PG 18. Online branch `feat/fulfilment-partner` (off main 982fb1d): catalogue `listings` + `GET /internal/supply/orders/{id}`, 3 new tests. |
+| P3 | Built 2026-11-27 night (local): Supply `partner_sync` worker (ONLINE_PARTNER_SYNC, off by default) sends the branch flag and the partner's entered counts (untouched items keep Online's figure; unlink zeroes then flag off), partner customer price for Other Products, loss flag on staff alerts and partner items. Online branch: migration 132 `branches.fulfilment_partner_active`, SUPPLY_PARTNER_ENABLED (off by default), PUT /internal/supply/branches/{id}/partner, /partner-price, /partner-stock, branch-admin price lock (409) incl. the Price app path; 4 new tests. Supply suite 300 pass. |
+| P4-P6 | Designed (section above), not built: owner MCQ + fresh reviewer first. Partner app screens (Flutter) not started. |

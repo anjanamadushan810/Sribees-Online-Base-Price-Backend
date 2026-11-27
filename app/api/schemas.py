@@ -253,6 +253,7 @@ class SupplierMeOut(BaseModel):
     supplier_name: str
     email: str | None = None
     must_change_password: bool = False
+    kind: str = "wholesale"  # fulfilment_partner: the app opens in partner mode
 
 
 # ---------------------------------------------------------------- supplier catalogue

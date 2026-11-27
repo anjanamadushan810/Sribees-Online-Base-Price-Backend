@@ -108,8 +108,9 @@ async def _entries(db: AsyncSession, rows: list[PartnerItem], count) -> list:
 
 
 async def _send_stock(client, sessionmaker, online_branch: uuid.UUID, entries: list) -> dict:
-    """Marks what Online took (or refused for good: reclassified, batches). Never retried in
-    a loop; a new count from the partner tries again."""
+    """Marks what Online took ("set"), or will not take while the product is not an Other
+    Products item ("not_partner"). Anything else (a weighed/counted disagreement, batches)
+    stays unmarked and is sent again next round until it is put right (review 2 #4)."""
     counts: dict[str, int] = defaultdict(int)
     for start in range(0, len(entries), 500):
         chunk = entries[start:start + 500]
@@ -118,7 +119,10 @@ async def _send_stock(client, sessionmaker, online_branch: uuid.UUID, entries: l
         results = answer.get("results") or []
         async with sessionmaker() as db, db.begin():
             for (marks, _), res in zip(chunk, results, strict=False):
-                counts[res.get("result", "unknown")] += 1
+                outcome = res.get("result", "unknown")
+                counts[outcome] += 1
+                if outcome not in ("set", "not_partner"):
+                    continue
                 for item_id, n in marks:
                     item = await db.get(PartnerItem, item_id, with_for_update=True)
                     if item is not None:

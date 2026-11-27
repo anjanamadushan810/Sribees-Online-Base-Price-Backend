@@ -65,13 +65,17 @@ async def statement(db: AsyncSession, supplier_id: uuid.UUID, branch_id: uuid.UU
         .where(Receipt.receipt_id.in_(_partner_receipt_ids(supplier_id, branch_id)),
                Receipt.received_date >= week, Receipt.received_date <= end_day)
         .order_by(Receipt.received_date, SupplyOrder.order_no))).all()
+    from app.models import FulfilmentLine, ReceiptLine  # noqa: PLC0415
+
+    # customer orders whose goods are on each receipt (a second price has its own order)
     counts = dict((await db.execute(
-        select(FulfilmentRequest.supply_order_id, func.count())
-        .where(FulfilmentRequest.supply_order_id.in_([o.order_id for o, _ in rows]))
-        .group_by(FulfilmentRequest.supply_order_id))).all()) if rows else {}
+        select(ReceiptLine.receipt_id, func.count(func.distinct(FulfilmentLine.request_id)))
+        .join(FulfilmentLine, FulfilmentLine.batch_id == ReceiptLine.batch_id)
+        .where(ReceiptLine.receipt_id.in_([r.receipt_id for _, r in rows]))
+        .group_by(ReceiptLine.receipt_id))).all()) if rows else {}
     days = [{"date": r.received_date.isoformat(), "order_no": o.order_no,
              "finance_po_no": o.finance_po_no, "receipt_no": r.receipt_no,
-             "customer_orders": counts.get(o.order_id, 0), "total": money(r.total)}
+             "customer_orders": counts.get(r.receipt_id, 0), "total": money(r.total)}
             for o, r in rows]
     start, end = _bounds(week)
     rets = list(await db.scalars(select(PartnerReturn).where(

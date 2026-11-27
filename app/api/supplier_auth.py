@@ -123,6 +123,6 @@ async def me(p: SupplierPrincipal = Depends(current_supplier),
     return SupplierMeOut(
         supplier_user_id=p.user.supplier_user_id, full_name=p.user.full_name,
         phone=p.user.phone, language=p.user.language, supplier_id=p.supplier_id,
-        supplier_name=supplier.name, email=p.user.email,
+        supplier_name=supplier.name, email=p.user.email, kind=supplier.kind,
         must_change_password=p.user.must_change_password and bool(session and session.via_password),
     )

@@ -187,6 +187,7 @@ def upgrade() -> None:
             seq bigint,
             event_type varchar(40),
             order_id uuid,
+            branch_id uuid REFERENCES branches (branch_id),
             payload jsonb NOT NULL,
             error text NOT NULL,
             created_at timestamptz NOT NULL DEFAULT now(),

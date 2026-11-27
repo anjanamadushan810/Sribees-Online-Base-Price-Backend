@@ -27,6 +27,7 @@ from app.models import (
     OnlineVariant,
     PartnerItem,
     PartnerPriceChange,
+    ProductBarcode,
     Supplier,
     SupplierBranch,
 )
@@ -287,8 +288,12 @@ async def my_items(db: AsyncSession, supplier_id: uuid.UUID, *, q: str | None = 
                    OnlineVariant.is_active.is_(True)))
     if q:
         like = f"%{q.strip()}%"
+        # a scanned pack barcode finds its pack size (product_barcodes, migration 0025)
+        scanned = select(ProductBarcode.online_variant_id).where(
+            ProductBarcode.barcode == q.strip())
         stmt = stmt.where(or_(OnlineProduct.name.ilike(like), OnlineProduct.name_si.ilike(like),
-                              OnlineProduct.sku.ilike(like), OnlineVariant.sku.ilike(like)))
+                              OnlineProduct.sku.ilike(like), OnlineVariant.sku.ilike(like),
+                              OnlineVariant.online_variant_id.in_(scanned)))
     total = await db.scalar(select(func.count()).select_from(stmt.subquery()))
     rows = (await db.execute(stmt.order_by(OnlineProduct.name, OnlineVariant.name)
                              .limit(limit).offset(offset))).all()

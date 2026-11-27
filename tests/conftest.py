@@ -151,7 +151,7 @@ async def _stock_branch(name: str) -> uuid.UUID:
     from app.models import Branch
 
     async with get_sessionmaker()() as s, s.begin():
-        b = Branch(code=f"BR{secrets.token_hex(2).upper()}", name=name,
+        b = Branch(code=f"BR{secrets.token_hex(4).upper()}", name=name,
                    online_branch_id=uuid.uuid4())
         s.add(b)
         await s.flush()

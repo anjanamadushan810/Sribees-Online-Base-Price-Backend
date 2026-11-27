@@ -224,3 +224,28 @@ async def test_a_loose_products_packs_go_to_online_as_grams(client, owner):
     items = [i for p, b in fake.for_branch(online) if p.endswith("/partner-stock")
              for i in b["items"]]
     assert items == [{"product_id": str(rice), "variant_id": None, "stock": 0, "grams": 5500}]
+
+
+async def test_a_count_online_does_not_take_is_sent_again(client, owner):
+    branch = await _stock_branch("Refused sync branch")
+    online = await _online_id(branch)
+    sid, ph = await _partner(client, owner, branch, signed_in=True)
+    pid, (vid,) = await _product("Disagreement")
+    await _list(branch, pid, "external_daily")
+    await _set_item(client, ph, branch, vid, price="20.00", stock=4)
+
+    class Refusing(FakeOnline):
+        def __call__(self, request):
+            if request.url.path.endswith("/partner-stock"):
+                body = json.loads(request.content)
+                self.calls.append((request.url.path, body))
+                return httpx.Response(200, json={"results": [
+                    {"product_id": i["product_id"], "result": "needs_grams"}
+                    for i in body["items"]]})
+            return super().__call__(request)
+    fake = Refusing()
+    with online_on():
+        await _round(fake)
+        await _round(fake)
+    sends = [b for p, b in fake.for_branch(online) if p.endswith("/partner-stock")]
+    assert len(sends) == 2  # not marked as taken, so tried again

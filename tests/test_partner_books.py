@@ -482,3 +482,97 @@ def _unused():
 
 
 __all__ = ["pytest"]
+
+
+# ---------------------------------------------------------------- review round 2
+async def test_one_partner_two_branches_get_their_own_invoice_numbers(client, owner):
+    from app.core.db import get_sessionmaker
+    from app.models import Branch
+
+    branch, manager, sid, ph, (a,) = await _setup(client, owner, items=(("A", "10.00"),))
+    second = await _stock_branch("Second branch")
+    manager2 = await sign_in(client, "branch_manager", [second])
+    r = await client.post(f"/partners/{sid}/branches", headers=owner.headers,
+                          json={"branch_id": str(second)})
+    assert r.status_code == 201, r.text
+    await _list(second, a, "external_daily")
+    await _set_item(client, ph, second, a, price="10.00", stock=5)
+    _o1, fr1 = await _order(branch, [_line(a, 1)])
+    _o2, fr2 = await _order(second, [_line(a, 1)])
+    await _hand(client, manager, fr1)
+    await _hand(client, manager2, fr2)
+    n1 = (await _receipt_of((await _close(branch))["orders"][0]))[1].invoice_no
+    n2 = (await _receipt_of((await _close(second))["orders"][0]))[1].invoice_no
+    async with get_sessionmaker()() as s:
+        code1, code2 = (await s.get(Branch, branch)).code, (await s.get(Branch, second)).code
+    assert n1 != n2 and f"-{code1}-" in n1 and f"-{code2}-" in n2
+
+
+async def test_a_retry_acts_on_the_order_as_it_is_now(client, owner, monkeypatch):
+    from app.core.db import get_sessionmaker
+    from app.models import Branch, PartnerEventFailure
+    from app.services import partner_requests
+
+    branch, manager, sid, ph, (a,) = await _setup(client, owner, items=(("A", "10.00"),))
+    order_id = uuid.uuid4()
+    async with get_sessionmaker()() as s, s.begin():
+        online = (await s.get(Branch, branch)).online_branch_id
+        row = PartnerEventFailure(seq=1, event_type="order.status", order_id=order_id,
+                                  branch_id=branch, error="boom", payload={
+                                      "seq": 1, "type": "order.status",
+                                      "payload": {"order_id": str(order_id),
+                                                  "branch": {"branch_id": str(online)},
+                                                  "to_status": "confirmed",
+                                                  "lines": [_line(a, 2)]}})
+        s.add(row)
+        await s.flush()
+        failure_id = row.failure_id
+
+    async def cancelled_now(_order_id):
+        return {"status": "cancelled", "lines": [_line(a, 2)]}
+    monkeypatch.setattr(partner_requests, "fetch_order", cancelled_now)
+    other = await sign_in(client, "branch_manager", [await _stock_branch("Not here")])
+    assert (await client.get("/partners/failures", headers=other.headers)).json() == []
+    assert any(f["failure_id"] == failure_id for f in (await client.get(
+        "/partners/failures", headers=manager.headers)).json())
+    r = await client.post(f"/partners/failures/{failure_id}/retry", headers=owner.headers)
+    assert r.status_code == 200 and r.json()["result"] == "ignored", r.text
+    assert await _request(order_id) is None  # never brought back to life
+
+
+async def test_a_split_line_returns_only_what_our_shelf_did_not_take_back(client, owner):
+    from app.core.db import get_sessionmaker
+    from app.models import Branch
+    from app.services import partner_requests
+
+    branch, manager, sid, ph, (a,) = await _setup(client, owner, items=(("A", "10.00"),))
+    item = uuid.uuid4()
+    order_id, fr = await _order(branch, [_line(a, 2, item)])
+    await _hand(client, manager, fr)
+    await _close(branch)
+    async with get_sessionmaker()() as s, s.begin():
+        online = (await s.get(Branch, branch)).online_branch_id
+        s.info["own_back"] = {f"{order_id}:{item}": 1}  # the pack-scan part took one back
+        got = await partner_requests.apply_event(s, {
+            "seq": 2, "event_id": str(uuid.uuid4()), "type": "order.undelivered",
+            "payload": {"order_id": str(order_id), "branch": {"branch_id": str(online)},
+                        "to_status": "delivered",
+                        "undelivered": [{"order_item_id": str(item), "quantity": 2}]}})
+    assert got == "partner:return:1"
+
+
+async def test_a_loose_product_without_a_stock_item_is_created_by_weight(client, owner):
+    from app.core.db import get_sessionmaker
+    from app.models import OnlineProduct, OnlineVariant, Product
+
+    branch, manager, sid, ph, (rice,) = await _setup(client, owner, items=(("Rice", "60.00"),))
+    async with get_sessionmaker()() as s, s.begin():
+        (await s.get(OnlineProduct, rice)).stock_mode = "loose"
+        (await s.get(OnlineVariant, rice)).weight_grams = 500
+    order_id, fr = await _order(branch, [_line(rice, 2)])
+    await _hand(client, manager, fr)
+    await _close(branch)
+    async with get_sessionmaker()() as s:
+        assert (await s.get(Product, rice)).unit == "kg"
+    line = (await _request(order_id)).lines[0]
+    assert (await _batch(line.batch_id)).qty_received == Decimal("1.000")

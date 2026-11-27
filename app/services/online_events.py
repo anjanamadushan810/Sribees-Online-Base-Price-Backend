@@ -57,6 +57,20 @@ async def _advance(db, seq: int) -> bool:
     return True
 
 
+async def _branch_of(db, ev: dict):
+    """Our branch for an Online event's branch (to scope its failure for staff)."""
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.models import Branch  # noqa: PLC0415
+
+    online = ((ev.get("payload") or {}).get("branch") or {}).get("branch_id")
+    try:
+        return await db.scalar(select(Branch.branch_id).where(
+            Branch.online_branch_id == uuid.UUID(str(online)))) if online else None
+    except ValueError:
+        return None
+
+
 async def _partner(db, ev: dict) -> str:
     """The fulfilment partner's part of an event (app/services/partner_requests.py), in a
     savepoint: if it fails, the pack-scan work of the same event still commits (plan G7)."""
@@ -70,8 +84,10 @@ async def _partner(db, ev: dict) -> str:
             order_id = uuid.UUID(str((ev.get("payload") or {}).get("order_id")))
         except ValueError:
             order_id = None
+        kept = {**ev, "_own_back": dict(db.info.get("own_back") or {})}  # for the retry
         db.add(PartnerEventFailure(seq=ev.get("seq"), event_type=str(ev.get("type"))[:40],
-                                   order_id=order_id, payload=ev, error=error))
+                                   order_id=order_id, branch_id=await _branch_of(db, ev),
+                                   payload=kept, error=error))
         await audit.record(db, action="partner.event_failed", entity="online_event",
                            entity_id=ev.get("seq"),
                            after={"type": ev.get("type"), "error": error[:500]})

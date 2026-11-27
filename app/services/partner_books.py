@@ -46,7 +46,6 @@ from app.models import (
     PartnerItem,
     PartnerReturn,
     PartnerReturnLine,
-    Pick,
     Product,
     Receipt,
     ReceiptLine,
@@ -209,20 +208,25 @@ class _Part:
     by_weight: bool = False
 
 
+async def _is_kg(db, variant_id: uuid.UUID) -> bool:
+    """Our stock item is kept by weight: an existing kg item, or (none yet) a weight option
+    of a product Online sells loose, so it is created by weight (review 2)."""
+    product = await db.get(Product, variant_id)
+    if product is not None:
+        return product.unit == "kg"
+    variant = await db.get(OnlineVariant, variant_id)
+    online = await db.get(OnlineProduct, variant.online_product_id) if variant else None
+    return bool(online and online.stock_mode == "loose" and variant.weight_grams)
+
+
 async def _per_unit(db, variant_id: uuid.UUID) -> Decimal:
     """1 for pieces; kilograms per unit when our stock item is kept by weight (a loose
     product's weight option: its grams, else 1 kg)."""
-    product = await db.get(Product, variant_id)
-    if product is None or product.unit != "kg":
+    if not await _is_kg(db, variant_id):
         return Decimal("1")
     variant = await db.get(OnlineVariant, variant_id)
     grams = variant.weight_grams if variant and variant.weight_grams else 1000
     return (Decimal(grams) / 1000).quantize(Decimal("0.001"))
-
-
-async def _is_kg(db, variant_id: uuid.UUID) -> bool:
-    product = await db.get(Product, variant_id)
-    return product is not None and product.unit == "kg"
 
 
 async def _owner_actor(db: AsyncSession) -> tuple[orders.StaffActor, Actor]:
@@ -272,11 +276,18 @@ async def close_day(db: AsyncSession, branch_id: uuid.UUID, day: date) -> dict:
     for fr in frs:
         by_partner[fr.supplier_id].append(fr)
     staff, actor = await _owner_actor(db)
-    out = {"booked": 0, "orders": []}
+    out: dict = {"booked": 0, "orders": [], "problems": []}
     for supplier_id, group in by_partner.items():
-        order_no = await _book(db, staff, actor, supplier_id, branch_id, day, group)
+        try:
+            async with db.begin_nested():  # one partner's problem never blocks another's
+                order_no = await _book(db, staff, actor, supplier_id, branch_id, day, group)
+        except SupplyError as exc:
+            out["problems"].append(exc.message)
+            continue
         out["booked"] += len(group)
         out["orders"].append(order_no)
+    if out["problems"] and not out["booked"]:
+        raise SupplyError("; ".join(out["problems"]))
     return out
 
 
@@ -360,6 +371,9 @@ def _partner_receipt_ids(supplier_id: uuid.UUID, branch_id: uuid.UUID):
 
 async def _book_tier(db, staff, actor, supplier, branch_id, day, suffix, parts, n_orders,
                      left) -> SupplyOrder:
+    # one partner may serve several branches: the branch is in the invoice number, else
+    # Finance finds the number taken and matches no invoice (review 2 HIGH)
+    branch_code = (await db.get(Branch, branch_id)).code
     order = await orders.create(db, staff, supplier_id=supplier.supplier_id, branch_id=branch_id,
                                 note=f"Partner goods {day.isoformat()}{suffix} "
                                      f"({n_orders} customer orders)")
@@ -379,7 +393,8 @@ async def _book_tier(db, staff, actor, supplier, branch_id, day, suffix, parts, 
     total = sum((p.price * p.units for _k, p in parts), Decimal("0"))
     receipt = await receiving.receive(
         db, actor, order.order_id, received_date=day,
-        invoice_no=f"{supplier.code}-{day.isoformat()}{suffix}"[:40], invoice_total=total,
+        invoice_no=f"{supplier.code}-{branch_code}-{day.isoformat()}{suffix}"[:40],
+        invoice_total=total,
         notes="Fulfilment partner: goods packed straight into customer orders",
         transport_charge=Decimal("0"), split_lines=True, pass_through=True,
         lines=[receiving.ReceiptLineIn(
@@ -433,14 +448,6 @@ async def _dispatch(db, fr: FulfilmentRequest, when: date, left: dict) -> None:
 
 
 # ======================================================================= back to the partner
-async def _own_units(db, order_id: uuid.UUID, item_id: uuid.UUID) -> int:
-    """Units of the order line packed from our own shelf (pack scans)."""
-    got = await db.scalar(select(func.coalesce(func.sum(Pick.qty), 0)).where(
-        Pick.online_order_id == order_id, Pick.order_item_id == item_id,
-        Pick.status.in_(("picked", "consumed", "returned"))))
-    return int(got or 0)
-
-
 async def after_handover(db: AsyncSession, fr: FulfilmentRequest, ev: dict) -> str:
     """An Online order event for a request already handed over: what comes back goes back
     to the partner (owner 2026-11-28)."""
@@ -472,10 +479,13 @@ async def after_handover(db: AsyncSession, fr: FulfilmentRequest, ev: dict) -> s
             except (KeyError, ValueError):
                 continue
         # an order line split between our shelf and the partner (F2): refused units come
-        # out of our own first, the pack-scan return takes those (review #4)
+        # out of our own first. Only what the pack-scan part of THIS event took back is
+        # subtracted (review #4, round 2 #3); a retried failure carries it in `_own_back`.
+        own = dict(ev.get("_own_back") or {})
+        own.update(db.info.get("own_back") or {})
         for item_id in list(want):
-            want[item_id] = max(0, want[item_id] - await _own_units(db, fr.online_order_id,
-                                                                     item_id))
+            want[item_id] = max(0, want[item_id] - int(own.get(f"{fr.online_order_id}:{item_id}",
+                                                                0)))
     plan = []
     for ln in fr.lines:
         n = min(want.get(ln.order_item_id, 0), ln.qty - ln.returned_qty)
@@ -640,17 +650,25 @@ async def _credit(db, ret: PartnerReturn, fr: FulfilmentRequest, lines: dict) ->
         fl.back_value += v
         rl.value = v
     branch = await db.get(Branch, fr.branch_id)
-    order = await db.get(SupplyOrder, fr.supply_order_id) if fr.supply_order_id else None
+    # the order the goods were bought on: a second price may have its own same-day order
+    order_ids = {}
+    for _rl, fl, _n, _v in plan:
+        order_ids[fl.line_id] = await db.scalar(
+            select(Receipt.order_id).join(ReceiptLine, ReceiptLine.receipt_id == Receipt.receipt_id)
+            .where(ReceiptLine.batch_id == fl.batch_id))
+    first = next(iter(order_ids.values()), None) or fr.supply_order_id
+    order = await db.get(SupplyOrder, first) if first else None
     db.add(OutboxEvent(event="supplier_return.posted", payload={
         "return_id": str(ret.return_id), "return_no": ret.return_no,
         "supplier_id": str(fr.supplier_id), "branch_id": str(fr.branch_id),
         "online_branch_id": str(branch.online_branch_id) if branch else None,
-        "order_id": str(fr.supply_order_id) if fr.supply_order_id else None,
+        "order_id": str(order.order_id) if order else None,
         "order_no": order.order_no if order else None,
         "return_date": when.isoformat(), "total": str(total), "reason": ret.reason,
         "customer_order": fr.order_number, "request_no": fr.request_no,
         "journal_id": str(out.journal_id) if out else None,
-        "lines": [{"product_id": str(fl.online_variant_id), "qty": n, "value": str(v)}
+        "lines": [{"product_id": str(fl.online_variant_id), "qty": n, "value": str(v),
+                   "order_id": str(order_ids[fl.line_id]) if order_ids.get(fl.line_id) else None}
                   for _rl, fl, n, v in plan]}))
 
 
@@ -679,6 +697,8 @@ async def run_once(sessionmaker: async_sessionmaker, now: datetime | None = None
             async with sessionmaker() as db, db.begin():
                 r = await close_day(db, branch_id, day)
                 done[f"{branch_id}:{day}"] = r.get("orders")
+                if r.get("problems"):  # another partner of that day still waits
+                    problems[f"{branch_id}:{day}"] = "; ".join(r["problems"])[:300]
         except Exception as exc:  # noqa: BLE001 -- kept for staff, the next pair goes on
             problems[f"{branch_id}:{day}"] = str(getattr(exc, "message", exc))[:300]
             log.warning("partner day %s %s not booked: %s", branch_id, day,
@@ -714,8 +734,11 @@ async def status(db: AsyncSession, scope: set[uuid.UUID] | None) -> dict:
         PartnerReturn.status != "accepted")
     if scope is not None:
         waiting = waiting.where(PartnerReturn.branch_id.in_(scope))
-    failures = await db.scalar(select(func.count()).select_from(PartnerEventFailure).where(
-        PartnerEventFailure.resolved_at.is_(None)))
+    failed = select(func.count()).select_from(PartnerEventFailure).where(
+        PartnerEventFailure.resolved_at.is_(None))
+    if scope is not None:
+        failed = failed.where(PartnerEventFailure.branch_id.in_(scope))
+    failures = await db.scalar(failed)
     return {"problems": problems, "unscanned": unscanned,
             "returns_open": await db.scalar(waiting) or 0,
             "event_failures": failures or 0}

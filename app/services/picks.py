@@ -236,6 +236,9 @@ async def give_back(db: AsyncSession, order_id: uuid.UUID, number: str | None,
     left at. `items` = [{order_item_id, quantity}]. Never more than went out (a pick keeps
     how much already came back: qty_returned)."""
     back: list[tuple[Pick, Decimal]] = []
+    # units of each order line taken back from OUR shelf by this event: the fulfilment
+    # partner's part of the same event takes only the rest (review 2026-11-28 #3)
+    own_back = db.info.setdefault("own_back", {})
     for it in items:
         item_id = uuid.UUID(str(it["order_item_id"]))
         want = int(it.get("quantity") or 0)
@@ -246,6 +249,8 @@ async def give_back(db: AsyncSession, order_id: uuid.UUID, number: str | None,
         pieces = [p for p in out if not p.by_weight]
         bags = [p for p in out if p.by_weight]
         back += [(p, p.qty - p.qty_returned) for p in pieces[:want]]
+        key = f"{order_id}:{item_id}"
+        own_back[key] = own_back.get(key, 0) + (want if bags else len(pieces[:want]))
         if bags:
             total = Decimal(max(ordered.get(str(item_id), want), 1))
             share = min(Decimal(want), total) / total

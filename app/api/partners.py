@@ -213,11 +213,14 @@ async def failures(p: Principal = Depends(require("partners.read")),
 
     from app.models import PartnerEventFailure  # noqa: PLC0415
 
-    rows = await db.scalars(select(PartnerEventFailure)
-                            .where(PartnerEventFailure.resolved_at.is_(None))
-                            .order_by(PartnerEventFailure.failure_id).limit(200))
+    stmt = select(PartnerEventFailure).where(PartnerEventFailure.resolved_at.is_(None))
+    scope = p.branch_scope()
+    if scope is not None:
+        stmt = stmt.where(PartnerEventFailure.branch_id.in_(scope))
+    rows = await db.scalars(stmt.order_by(PartnerEventFailure.failure_id).limit(200))
     return [{"failure_id": f.failure_id, "seq": f.seq, "event_type": f.event_type,
-             "order_id": str(f.order_id) if f.order_id else None, "error": f.error,
+             "order_id": str(f.order_id) if f.order_id else None,
+             "branch_id": str(f.branch_id) if f.branch_id else None, "error": f.error,
              "created_at": f.created_at} for f in rows]
 
 
@@ -225,7 +228,8 @@ async def failures(p: Principal = Depends(require("partners.read")),
 async def retry_failure(failure_id: int, request: Request,
                         p: Principal = Depends(require("partners.write")),
                         db: AsyncSession = Depends(get_db)):
-    """Run the partner part of a failed Online event again."""
+    """Run the partner part of a failed Online event again, on the order as it is NOW (a
+    stale 'confirmed' must not bring back an order cancelled since: review 2 #2)."""
     from datetime import UTC, datetime  # noqa: PLC0415
 
     from fastapi import HTTPException  # noqa: PLC0415
@@ -233,11 +237,23 @@ async def retry_failure(failure_id: int, request: Request,
     from app.models import PartnerEventFailure  # noqa: PLC0415
 
     row = await db.get(PartnerEventFailure, failure_id, with_for_update=True)
-    if row is None or row.resolved_at is not None:
+    scope = p.branch_scope()
+    if row is None or row.resolved_at is not None or (
+            scope is not None and row.branch_id not in scope):
         raise HTTPException(status_code=404, detail="failure not found")
+    ev = dict(row.payload)
+    payload = dict(ev.get("payload") or {})
+    if ev.get("type") == "order.status" and payload.get("order_id"):
+        current = await partner_requests.fetch_order(uuid.UUID(str(payload["order_id"])))
+        if current is None:
+            raise HTTPException(status_code=409,
+                                detail="SRIBEESonline cannot be reached; try again later")
+        payload["to_status"] = current.get("status") or payload.get("to_status")
+        payload["lines"] = current.get("lines") or []
+        ev["payload"] = payload
     try:
         async with db.begin_nested():
-            what = await partner_requests.apply_event(db, row.payload)
+            what = await partner_requests.apply_event(db, ev)
     except Exception as exc:  # noqa: BLE001 -- shown to staff, kept to retry again
         row.error = str(getattr(exc, "message", exc))[:2000]
         await db.flush()

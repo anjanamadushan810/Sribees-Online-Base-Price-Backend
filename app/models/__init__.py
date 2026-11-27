@@ -1244,6 +1244,8 @@ class PartnerEventFailure(Base):
     seq: Mapped[int | None] = mapped_column(BigInteger)
     event_type: Mapped[str | None] = mapped_column(String(40))
     order_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    branch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id"))
     payload: Mapped[dict] = mapped_column(JSONB)
     error: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = _created()

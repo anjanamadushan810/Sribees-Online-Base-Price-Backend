@@ -531,3 +531,20 @@ async def test_catalogue_listings_follow_online(db):
     assert await db.scalar(select(OnlineBranchListing.sourcing_group).where(
         OnlineBranchListing.online_product_id == pid)) is None  # unknown group = unclassified
     assert await apply_listings(db, [{"product_id": str(pid), "listings": []}]) == 0
+
+
+async def test_the_app_knows_it_is_a_partner_and_finds_items_by_barcode(client, owner):
+    from app.core.db import get_sessionmaker
+    from app.models import ProductBarcode
+
+    branch = await _stock_branch("Barcode branch")
+    sid, ph = await _partner(client, owner, branch, signed_in=True)
+    assert (await client.get("/supplier/me", headers=ph)).json()["kind"] == "fulfilment_partner"
+    pid, (vid,) = await _product("Scanned")
+    await _list(branch, pid, "external_daily")
+    code = f"479{secrets.randbelow(10**10):010d}"
+    async with get_sessionmaker()() as s, s.begin():
+        s.add(ProductBarcode(barcode=code, online_variant_id=vid))
+    found = (await client.get("/supplier/partner/items", headers=ph,
+                              params={"q": code})).json()
+    assert [i["online_variant_id"] for i in found["items"]] == [str(vid)]

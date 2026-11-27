@@ -365,6 +365,7 @@ class SupplyOrder(Base):
     rest_closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     rest_closed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     is_quick_buy: Mapped[bool] = mapped_column(Boolean, default=False)  # 0017
+    is_auto_draft: Mapped[bool] = mapped_column(Boolean, default=False)  # 0024
 
     lines: Mapped[list["SupplyOrderLine"]] = relationship(
         lazy="selectin", order_by="SupplyOrderLine.heading", cascade="all, delete-orphan")
@@ -896,3 +897,31 @@ class ReceiptPhoto(Base):
     uploaded_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.user_id"))
     uploaded_at: Mapped[datetime] = _created()
+
+
+class MainSupplier(Base):
+    """0024: the supplier staff chose for an item's automatic orders."""
+
+    __tablename__ = "main_suppliers"
+
+    online_variant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("online_variants.online_variant_id"), primary_key=True)
+    supplier_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("suppliers.supplier_id"))
+    set_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.user_id"))
+    set_at: Mapped[datetime] = _created()
+
+
+class ReorderRun(Base):
+    """0024: one reorder run for a branch and what it did."""
+
+    __tablename__ = "reorder_runs"
+
+    run_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id"))
+    ran_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+    ran_at: Mapped[datetime] = _created()
+    result: Mapped[dict] = mapped_column(JSONB)
+

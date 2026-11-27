@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     # Add received goods to the shop's stock (POST /internal/supply/receipts; Online must
     # have SUPPLY_STOCK_IN_ENABLED). Receipts saved while this is off are never sent.
     online_stock_in: bool = False
+    # Automatic draft orders: the hour (Sri Lanka) of the daily run; -1 = no daily run.
+    reorder_daily_hour: int = Field(default=7, ge=-1, le=23)
     # Pack scan (phase E): SHA-256 of the token Online presents on /internal/online/*
     # (empty = 404), the peers it may come from, and how often the worker reads Online's
     # order events (delivered / cancelled / returned) from /internal/supply/events.

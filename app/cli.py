@@ -48,11 +48,19 @@ async def worker(once: bool) -> None:
     ONLINE_API_URL is set). A second copy waits on the lock."""
     import logging
     import time
+    from datetime import UTC, datetime
 
     import httpx
 
     from app.core.config import get_settings
-    from app.services import finance_link, online_catalog, online_events, online_stock, push
+    from app.services import (
+        finance_link,
+        online_catalog,
+        online_events,
+        online_stock,
+        push,
+        reorder,
+    )
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     log = logging.getLogger("supply.worker")
@@ -93,6 +101,13 @@ async def worker(once: bool) -> None:
                             log.info("online events: %s", counts)
                     except Exception:  # noqa: BLE001 -- logged, retried next round
                         log.exception("online events round failed")
+                if online_on and settings.reorder_daily_hour >= 0:
+                    try:
+                        done = await reorder.daily(sessionmaker, client, datetime.now(UTC))
+                        if done is not None:
+                            log.info("reorder: %s", done)
+                    except Exception:  # noqa: BLE001 -- logged, tried again next round
+                        log.exception("reorder round failed")
                 if online_stock.enabled():
                     try:
                         counts = await online_stock.run_once(sessionmaker, client)

@@ -19,7 +19,7 @@ import httpx
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.core.config import get_settings
-from app.models import OnlineEventFailure, SyncState
+from app.models import OnlineEventFailure, PartnerEventFailure, SyncState
 from app.services import audit, partner_requests, picks
 
 log = logging.getLogger("supply.online_events")
@@ -63,13 +63,18 @@ async def _partner(db, ev: dict) -> str:
     try:
         async with db.begin_nested():
             return await partner_requests.apply_event(db, ev)
-    except Exception as exc:  # noqa: BLE001 -- logged and audited; the shop goes on
+    except Exception as exc:  # noqa: BLE001 -- kept with its payload to retry; the shop goes on
         log.exception("partner part of online event %s failed", ev.get("seq"))
+        error = str(getattr(exc, "message", exc))[:2000]
+        try:
+            order_id = uuid.UUID(str((ev.get("payload") or {}).get("order_id")))
+        except ValueError:
+            order_id = None
+        db.add(PartnerEventFailure(seq=ev.get("seq"), event_type=str(ev.get("type"))[:40],
+                                   order_id=order_id, payload=ev, error=error))
         await audit.record(db, action="partner.event_failed", entity="online_event",
                            entity_id=ev.get("seq"),
-                           after={"type": ev.get("type"),
-                                  "order_id": (ev.get("payload") or {}).get("order_id"),
-                                  "error": str(getattr(exc, "message", exc))[:500]})
+                           after={"type": ev.get("type"), "error": error[:500]})
         return "partner:failed"
 
 

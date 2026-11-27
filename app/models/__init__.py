@@ -289,6 +289,7 @@ class OnlineProduct(Base):
     image_url: Mapped[str | None] = mapped_column(String(500))  # main photo (migration 0020)
     weight_grams: Mapped[int | None] = mapped_column(Integer)  # courier weight (0022)
     expiry_alert_days: Mapped[int | None] = mapped_column(Integer)  # from Online (0028)
+    stock_mode: Mapped[str | None] = mapped_column(String(8))  # unit/loose/packed (0030)
     synced_at: Mapped[datetime] = _created()
 
 
@@ -1161,6 +1162,8 @@ class FulfilmentRequest(Base):
         UUID(as_uuid=True), ForeignKey("supply_orders.order_id"))
     order_closed: Mapped[str | None] = mapped_column(String(12))  # cancelled | rto
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    unscanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    excluded_reason: Mapped[str | None] = mapped_column(String(300))
 
     lines: Mapped[list["FulfilmentLine"]] = relationship(
         lazy="selectin", order_by="FulfilmentLine.name", cascade="all, delete-orphan")
@@ -1185,3 +1188,79 @@ class FulfilmentLine(Base):
         UUID(as_uuid=True), ForeignKey("stock_batches.batch_id"))
     returned_qty: Mapped[int] = mapped_column(Integer, default=0)
     expiry_date: Mapped[date | None] = mapped_column(Date)  # typed at handover (optional)
+    out_qty: Mapped[int] = mapped_column(Integer, default=0)  # dispatched to the order
+    stock_per_unit: Mapped[Decimal] = mapped_column(Numeric(10, 3), default=Decimal("1"))
+    out_value: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    back_qty: Mapped[int] = mapped_column(Integer, default=0)  # of those, taken back
+    back_value: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
+
+
+class PartnerReturn(Base):
+    """Goods sent back after the handover: they go back to the partner (owner 2026-11-28)."""
+
+    __tablename__ = "partner_returns"
+
+    return_id: Mapped[uuid.UUID] = _uuid_pk()
+    return_no: Mapped[str] = mapped_column(String(20))
+    request_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fulfilment_requests.request_id"))
+    supplier_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("suppliers.supplier_id"))
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id"))
+    reason: Mapped[str] = mapped_column(String(12))
+    status: Mapped[str] = mapped_column(String(10), default="waiting")
+    in_books: Mapped[bool] = mapped_column(Boolean)
+    event_ref: Mapped[str] = mapped_column(String(120))
+    credit_total: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    created_at: Mapped[datetime] = _created()
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sent_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    accepted_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("supplier_users.supplier_user_id"))
+
+    lines: Mapped[list["PartnerReturnLine"]] = relationship(
+        lazy="selectin", cascade="all, delete-orphan")
+
+
+class PartnerReturnLine(Base):
+    __tablename__ = "partner_return_lines"
+
+    line_id: Mapped[uuid.UUID] = _uuid_pk()
+    return_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("partner_returns.return_id"))
+    fr_line_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fulfilment_lines.line_id"))
+    qty: Mapped[int] = mapped_column(Integer)
+    value: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+
+
+class PartnerEventFailure(Base):
+    __tablename__ = "partner_event_failures"
+
+    failure_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    seq: Mapped[int | None] = mapped_column(BigInteger)
+    event_type: Mapped[str | None] = mapped_column(String(40))
+    order_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    payload: Mapped[dict] = mapped_column(JSONB)
+    error: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created()
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+
+
+class PartnerStatementConfirm(Base):
+    __tablename__ = "partner_statement_confirms"
+
+    supplier_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("suppliers.supplier_id"), primary_key=True)
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id"), primary_key=True)
+    week_start: Mapped[date] = mapped_column(Date, primary_key=True)
+    total: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    confirmed_at: Mapped[datetime] = _created()
+    confirmed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("supplier_users.supplier_user_id"))

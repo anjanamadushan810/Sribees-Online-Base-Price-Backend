@@ -148,6 +148,8 @@ async def apply(db: AsyncSession, payload: dict, *, user_id: uuid.UUID | None) -
             image_url=_image(p.get("image_url")),
             weight_grams=_weight(p.get("weight_grams")),
             expiry_alert_days=_days(p.get("expiry_alert_days")),
+            stock_mode=(p.get("stock_mode") if p.get("stock_mode") in ("unit", "loose", "packed")
+                        else None),
         )
         stmt = insert(OnlineProduct).values(online_product_id=pid, **values)
         await db.execute(stmt.on_conflict_do_update(

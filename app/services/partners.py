@@ -301,6 +301,7 @@ async def my_items(db: AsyncSession, supplier_id: uuid.UUID, *, q: str | None = 
         "display_size": p.display_size, "display_size_unit": p.display_size_unit,
         "image_url": p.image_url, "sku": v.sku or p.sku,
         "price_to_us": money(i.price_to_us) if i else None,
+        "price_missing": i is None or i.price_to_us is None,  # mandatory (owner 2026-11-28)
         "stock_qty": i.stock_qty if i else 0,
         "updated_at": i.updated_at if i else None}
         for bid, group, bname, p, v, i in rows]}
@@ -343,6 +344,8 @@ async def update_item(db: AsyncSession, supplier_id: uuid.UUID, supplier_user_id
                                   changed_by=supplier_user_id))
         item.price_to_us = Decimal(price_to_us)
     if stock_qty is not UNSET:
+        if item.price_to_us is None:  # owner 2026-11-28: a price is mandatory
+            raise SupplyError("enter your price to Sribees first, then the stock")
         item.stock_qty = int(stock_qty)
     item.updated_by = supplier_user_id
     after = {"price_to_us": money(item.price_to_us), "stock_qty": item.stock_qty}

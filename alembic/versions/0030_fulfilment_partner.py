@@ -30,6 +30,9 @@ depends_on = None
 def upgrade() -> None:
     op.execute("ALTER TABLE suppliers ADD COLUMN kind varchar(20) NOT NULL DEFAULT 'wholesale' "
                "CHECK (kind IN ('wholesale', 'fulfilment_partner'))")
+    # how Online keeps the product's stock (unit / loose / packed): a loose product's partner
+    # count goes to Online in grams
+    op.execute("ALTER TABLE online_products ADD COLUMN stock_mode varchar(8)")
     op.execute("""
         CREATE TABLE supplier_branches (
             supplier_id uuid NOT NULL REFERENCES suppliers (supplier_id),
@@ -104,7 +107,11 @@ def upgrade() -> None:
             supply_order_id uuid REFERENCES supply_orders (order_id),
             -- the customer order was cancelled / sent back after the bag was handed over
             order_closed varchar(12) CHECK (order_closed IN ('cancelled', 'rto')),
-            closed_at timestamptz
+            closed_at timestamptz,
+            -- the order went out (packed / with the courier) but its bag was never scanned
+            unscanned_at timestamptz,
+            -- the owner took it out of the day order (booked by hand)
+            excluded_reason varchar(300)
         )""")
     op.execute("CREATE INDEX fulfilment_requests_open ON fulfilment_requests "
                "(supplier_id, status) WHERE status IN ('new', 'seen', 'ready')")
@@ -128,16 +135,87 @@ def upgrade() -> None:
             batch_id uuid REFERENCES stock_batches (batch_id),
             returned_qty integer NOT NULL DEFAULT 0 CHECK (returned_qty >= 0),
             expiry_date date,  -- typed at handover when staff see it on the pack
+            -- units claimed back (cancel / refused / returned), before or after booking
+            -- (returned_qty above); of the dispatched units, those the partner took back
+            out_qty integer NOT NULL DEFAULT 0 CHECK (out_qty >= 0),
+            -- stock measure per unit: 1 piece, or kilograms for goods kept by weight
+            stock_per_unit numeric(10, 3) NOT NULL DEFAULT 1,
+            out_value numeric(14, 2),
+            back_qty integer NOT NULL DEFAULT 0 CHECK (back_qty >= 0),
+            back_value numeric(14, 2) NOT NULL DEFAULT 0,
             CHECK (ticked_qty <= qty AND returned_qty <= qty),
             UNIQUE (request_id, order_item_id)
         )""")
 
+    # owner 2026-11-28: goods sent back after the handover go back to the PARTNER: staff
+    # hand them over, the partner accepts them in the app; booked goods become a supplier
+    # credit in Finance (supplier_return.posted)
+    op.execute("""
+        CREATE TABLE partner_returns (
+            return_id uuid PRIMARY KEY,
+            return_no varchar(20) NOT NULL UNIQUE,
+            request_id uuid NOT NULL REFERENCES fulfilment_requests (request_id),
+            supplier_id uuid NOT NULL REFERENCES suppliers (supplier_id),
+            branch_id uuid NOT NULL REFERENCES branches (branch_id),
+            reason varchar(12) NOT NULL
+                CHECK (reason IN ('cancelled', 'rto', 'undelivered', 'returned')),
+            status varchar(10) NOT NULL DEFAULT 'waiting'
+                CHECK (status IN ('waiting', 'sent', 'accepted')),
+            in_books boolean NOT NULL,
+            event_ref varchar(120) NOT NULL UNIQUE,
+            credit_total numeric(14, 2),
+            created_at timestamptz NOT NULL DEFAULT now(),
+            sent_at timestamptz,
+            sent_by uuid REFERENCES users (user_id),
+            accepted_at timestamptz,
+            accepted_by uuid REFERENCES supplier_users (supplier_user_id)
+        )""")
+    op.execute("CREATE INDEX partner_returns_open ON partner_returns (branch_id, status) "
+               "WHERE status <> 'accepted'")
+    op.execute("""
+        CREATE TABLE partner_return_lines (
+            line_id uuid PRIMARY KEY,
+            return_id uuid NOT NULL REFERENCES partner_returns (return_id) ON DELETE CASCADE,
+            fr_line_id uuid NOT NULL REFERENCES fulfilment_lines (line_id),
+            qty integer NOT NULL CHECK (qty > 0),
+            value numeric(14, 2)
+        )""")
+    # the partner part of an Online event that failed: kept with its payload to retry
+    op.execute("""
+        CREATE TABLE partner_event_failures (
+            failure_id bigserial PRIMARY KEY,
+            seq bigint,
+            event_type varchar(40),
+            order_id uuid,
+            payload jsonb NOT NULL,
+            error text NOT NULL,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            resolved_at timestamptz,
+            resolved_by uuid REFERENCES users (user_id)
+        )""")
+    # P5: the partner agreed with a week's statement (Mon-Sun); payment itself is Finance's
+    op.execute("""
+        CREATE TABLE partner_statement_confirms (
+            supplier_id uuid NOT NULL REFERENCES suppliers (supplier_id),
+            branch_id uuid NOT NULL REFERENCES branches (branch_id),
+            week_start date NOT NULL,
+            total numeric(14, 2) NOT NULL,
+            confirmed_at timestamptz NOT NULL DEFAULT now(),
+            confirmed_by uuid REFERENCES supplier_users (supplier_user_id),
+            PRIMARY KEY (supplier_id, branch_id, week_start)
+        )""")
+
 
 def downgrade() -> None:
+    op.execute("DROP TABLE partner_statement_confirms")
+    op.execute("DROP TABLE partner_event_failures")
+    op.execute("DROP TABLE partner_return_lines")
+    op.execute("DROP TABLE partner_returns")
     op.execute("DROP TABLE fulfilment_lines")
     op.execute("DROP TABLE fulfilment_requests")
     op.execute("DROP TABLE partner_price_changes")
     op.execute("DROP TABLE partner_items")
     op.execute("DROP TABLE online_branch_listings")
     op.execute("DROP TABLE supplier_branches")
+    op.execute("ALTER TABLE online_products DROP COLUMN stock_mode")
     op.execute("ALTER TABLE suppliers DROP COLUMN kind")

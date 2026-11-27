@@ -67,7 +67,7 @@ async def _round(fake):
         return await partner_sync.run_once(get_sessionmaker(), c)
 
 
-async def test_sync_sends_the_flag_then_only_counts_the_partner_entered(client, owner):
+async def test_sync_sends_the_flag_then_counts_and_0_for_unpriced_items(client, owner):
     branch = await _stock_branch("Sync branch")
     online = await _online_id(branch)
     sid, ph = await _partner(client, owner, branch, signed_in=True, shortfall=True)
@@ -86,9 +86,10 @@ async def test_sync_sends_the_flag_then_only_counts_the_partner_entered(client, 
         mine = fake.for_branch(online)
         assert mine[0] == (f"/internal/supply/branches/{online}/partner", {"active": True})
         stock = [b for p, b in mine if p.endswith("/partner-stock")]
-        assert stock == [{"branch_id": str(online), "items": [
-            {"product_id": str(entered), "variant_id": None, "stock": 7}]}]
-        # Our Store stock is ours, never the partner's count; untouched items keep Online's
+        sent = {i["product_id"]: i["stock"] for b in stock for i in b["items"]}
+        # owner 2026-11-28: a price is mandatory, so an item the partner never priced is 0;
+        # Our Store stock is ours, never the partner's count
+        assert sent == {str(entered): 7, str(untouched): 0}
 
         fake.calls.clear()
         await _round(fake)
@@ -200,3 +201,26 @@ async def test_staff_alerts_flag_a_loss(client, owner, monkeypatch):
         assert [(r["customer_price"], r["loss"]) for r in rows] == [("180.00", True)]
         items = (await client.get("/supplier/partner/items", headers=ph)).json()["items"]
         assert [(i["customer_price"], i["loss"]) for i in items] == [("180.00", True)]
+
+
+async def test_a_loose_products_packs_go_to_online_as_grams(client, owner):
+    from app.core.db import get_sessionmaker
+    from app.models import OnlineProduct, OnlineVariant
+
+    branch = await _stock_branch("Loose sync branch")
+    online = await _online_id(branch)
+    sid, ph = await _partner(client, owner, branch, signed_in=True)
+    rice, (half, kilo) = await _product("Rice", variants=2)
+    async with get_sessionmaker()() as s, s.begin():
+        (await s.get(OnlineProduct, rice)).stock_mode = "loose"
+        (await s.get(OnlineVariant, half)).weight_grams = 500
+        (await s.get(OnlineVariant, kilo)).weight_grams = 1000
+    await _list(branch, rice, "external_daily")
+    await _set_item(client, ph, branch, half, price="90.00", stock=5)
+    await _set_item(client, ph, branch, kilo, price="175.00", stock=3)
+    fake = FakeOnline()
+    with online_on():
+        await _round(fake)
+    items = [i for p, b in fake.for_branch(online) if p.endswith("/partner-stock")
+             for i in b["items"]]
+    assert items == [{"product_id": str(rice), "variant_id": None, "stock": 0, "grams": 5500}]

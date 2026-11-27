@@ -5,10 +5,10 @@ Each worker round:
 1. **Branch flag.** Online is told whether each branch's partner is working
    (PUT /internal/supply/branches/{id}/partner). While it is on, Online lets the partner price
    the branch's Other Products and locks those prices against branch admins (F17).
-2. **Stock.** The partner's own count of each Other Products item it has entered goes to
-   Online as the branch's stock (PUT /internal/supply/partner-stock), whenever it differs from
-   what Online last took. An item the partner never entered is not sent: Online keeps the
-   figure staff set until the partner counts it (no product drops to 0 at switch-on).
+2. **Stock.** The partner's own count of each Other Products item goes to Online as the
+   branch's stock (PUT /internal/supply/partner-stock), whenever it differs from what Online
+   last took. A price is mandatory (owner 2026-11-28): an item without the partner's price is
+   sent as 0, so it cannot be sold. A loose product (weighed into the bag) goes in grams.
 3. **Clean exit (G6).** When a branch's partner is unlinked, its items Online holds a partner
    count for go to 0 first, then the flag goes off.
 
@@ -22,13 +22,15 @@ import uuid
 from collections import defaultdict
 
 import httpx
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, case, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
 from app.models import (
     Branch,
     OnlineBranchListing,
+    OnlineProduct,
+    OnlineVariant,
     PartnerItem,
     Supplier,
     SupplierBranch,
@@ -75,26 +77,80 @@ def _ref(item: PartnerItem) -> dict:
             "variant_id": None if variant == item.online_product_id else str(variant)}
 
 
-async def _send_stock(client, sessionmaker, online_branch: uuid.UUID,
-                      items: list[tuple[uuid.UUID, dict, int]]) -> dict:
-    """items: (item_id, ref, count). Marks what Online took (or refused for good)."""
+def _wanted(item: PartnerItem) -> int:
+    """What Online should hold for the item: the partner's count, but 0 while it has no
+    price (owner 2026-11-28: a price is mandatory, an unpriced item cannot be sold)."""
+    return item.stock_qty if item.price_to_us is not None else 0
+
+
+async def _entries(db: AsyncSession, rows: list[PartnerItem], count) -> list:
+    """[(rows with the count each was sent at, Online item)]. A loose product (weighed into
+    the bag) is one item in grams: the partner's packs of each weight option added up."""
+    pids = {r.online_product_id for r in rows}
+    modes = dict((await db.execute(select(OnlineProduct.online_product_id,
+                                          OnlineProduct.stock_mode)
+                                   .where(OnlineProduct.online_product_id.in_(pids)))).all())
+    grams = dict((await db.execute(select(OnlineVariant.online_variant_id,
+                                          OnlineVariant.weight_grams)
+                                   .where(OnlineVariant.online_product_id.in_(pids)))).all())
+    out, loose = [], defaultdict(list)
+    for r in rows:
+        if modes.get(r.online_product_id) == "loose":
+            loose[r.online_product_id].append(r)
+        else:
+            n = count(r)
+            out.append(([(r.item_id, n)], {**_ref(r), "stock": n}))
+    for pid, rs in loose.items():
+        total = sum(count(r) * (grams.get(r.online_variant_id) or 0) for r in rs)
+        out.append(([(r.item_id, count(r)) for r in rs],
+                    {"product_id": str(pid), "variant_id": None, "stock": 0, "grams": total}))
+    return out
+
+
+async def _send_stock(client, sessionmaker, online_branch: uuid.UUID, entries: list) -> dict:
+    """Marks what Online took (or refused for good: reclassified, batches). Never retried in
+    a loop; a new count from the partner tries again."""
     counts: dict[str, int] = defaultdict(int)
-    for start in range(0, len(items), 500):
-        chunk = items[start:start + 500]
+    for start in range(0, len(entries), 500):
+        chunk = entries[start:start + 500]
         answer = await call(client, "/internal/supply/partner-stock", {
-            "branch_id": str(online_branch),
-            "items": [{**ref, "stock": n} for _, ref, n in chunk]})
+            "branch_id": str(online_branch), "items": [item for _, item in chunk]})
         results = answer.get("results") or []
         async with sessionmaker() as db, db.begin():
-            for (item_id, _, n), res in zip(chunk, results, strict=False):
-                outcome = res.get("result", "unknown")
-                counts[outcome] += 1
-                item = await db.get(PartnerItem, item_id, with_for_update=True)
-                if item is not None:
-                    # "set": Online holds it. Anything else (reclassified, loose, batches):
-                    # never retried in a loop; a new count from the partner tries again.
-                    item.online_stock_sent = n
+            for (marks, _), res in zip(chunk, results, strict=False):
+                counts[res.get("result", "unknown")] += 1
+                for item_id, n in marks:
+                    item = await db.get(PartnerItem, item_id, with_for_update=True)
+                    if item is not None:
+                        item.online_stock_sent = n
     return dict(counts)
+
+
+async def _fill_rows(sessionmaker, linked: set[uuid.UUID]) -> int:
+    """Every Other Products pack size a linked partner fills gets its row (stock 0, no
+    price), so an item the partner has not priced yet is sent to Online as 0."""
+    async with sessionmaker() as db, db.begin():
+        missing = (await db.execute(
+            select(SupplierBranch.supplier_id, OnlineBranchListing.branch_id,
+                   OnlineVariant.online_product_id, OnlineVariant.online_variant_id)
+            .join(OnlineBranchListing, OnlineBranchListing.branch_id == SupplierBranch.branch_id)
+            .join(OnlineProduct, OnlineProduct.online_product_id
+                  == OnlineBranchListing.online_product_id)
+            .join(OnlineVariant, OnlineVariant.online_product_id
+                  == OnlineProduct.online_product_id)
+            .outerjoin(PartnerItem, and_(
+                PartnerItem.supplier_id == SupplierBranch.supplier_id,
+                PartnerItem.branch_id == SupplierBranch.branch_id,
+                PartnerItem.online_variant_id == OnlineVariant.online_variant_id))
+            .where(SupplierBranch.branch_id.in_(linked),
+                   OnlineBranchListing.sourcing_group.in_(EXTERNAL),
+                   OnlineProduct.is_active.is_(True), OnlineVariant.is_active.is_(True),
+                   PartnerItem.item_id.is_(None)).limit(5000))).all()
+        for supplier_id, branch_id, product_id, variant_id in missing:
+            db.add(PartnerItem(supplier_id=supplier_id, branch_id=branch_id,
+                               online_product_id=product_id, online_variant_id=variant_id,
+                               stock_qty=0))
+    return len(missing)
 
 
 async def _flags(db: AsyncSession) -> dict:
@@ -135,9 +191,9 @@ async def run_once(sessionmaker: async_sessionmaker, client: httpx.AsyncClient) 
             async with sessionmaker() as db:
                 rows = list(await db.scalars(select(PartnerItem).where(
                     PartnerItem.branch_id == branch_id, PartnerItem.online_stock_sent > 0)))
-            if rows:
-                done = await _send_stock(client, sessionmaker, online_branch,
-                                         [(r.item_id, _ref(r), 0) for r in rows])
+                entries = await _entries(db, rows, lambda _r: 0)
+            if entries:
+                done = await _send_stock(client, sessionmaker, online_branch, entries)
                 counts["zeroed"] += sum(done.values())
         await call(client, f"/internal/supply/branches/{online_branch}/partner",
                    {"active": want})
@@ -145,8 +201,12 @@ async def run_once(sessionmaker: async_sessionmaker, client: httpx.AsyncClient) 
         counts["flag_on" if want else "flag_off"] += 1
 
     if linked:
+        added = await _fill_rows(sessionmaker, linked)
+        if added:
+            counts["rows_added"] += added
+        wanted = case((PartnerItem.price_to_us.is_(None), 0), else_=PartnerItem.stock_qty)
         async with sessionmaker() as db:
-            rows = (await db.execute(
+            changed = (await db.execute(
                 select(PartnerItem)
                 .join(SupplierBranch, and_(SupplierBranch.branch_id == PartnerItem.branch_id,
                                            SupplierBranch.supplier_id == PartnerItem.supplier_id))
@@ -154,17 +214,25 @@ async def run_once(sessionmaker: async_sessionmaker, client: httpx.AsyncClient) 
                     OnlineBranchListing.branch_id == PartnerItem.branch_id,
                     OnlineBranchListing.online_product_id == PartnerItem.online_product_id))
                 .where(PartnerItem.branch_id.in_(linked),
-                       PartnerItem.updated_by.is_not(None),
                        OnlineBranchListing.sourcing_group.in_(EXTERNAL),
-                       or_(PartnerItem.online_stock_sent.is_(None),
-                           PartnerItem.online_stock_sent != PartnerItem.stock_qty))
+                       PartnerItem.online_stock_sent.is_distinct_from(wanted))
                 .limit(2000))).scalars().all()
-        per_branch: dict[uuid.UUID, list] = defaultdict(list)
-        for r in rows:
-            per_branch[r.branch_id].append((r.item_id, _ref(r), r.stock_qty))
-        for branch_id, items in per_branch.items():
+            # a loose product goes as one figure: take all its pack sizes, not just the changed
+            keys = {(r.branch_id, r.supplier_id, r.online_product_id) for r in changed}
+            rows = {r.item_id: r for r in changed}
+            for branch_id, supplier_id, product_id in keys:
+                for r in await db.scalars(select(PartnerItem).where(
+                        PartnerItem.branch_id == branch_id,
+                        PartnerItem.supplier_id == supplier_id,
+                        PartnerItem.online_product_id == product_id)):
+                    rows.setdefault(r.item_id, r)
+            per_branch: dict[uuid.UUID, list] = defaultdict(list)
+            for r in rows.values():
+                per_branch[r.branch_id].append(r)
+            plans = {b: await _entries(db, rs, _wanted) for b, rs in per_branch.items()}
+        for branch_id, entries in plans.items():
             for outcome, n in (await _send_stock(client, sessionmaker, branches[branch_id],
-                                                 items)).items():
+                                                 entries)).items():
                 counts[f"stock_{outcome}"] += n
     return dict(counts)
 

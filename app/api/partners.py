@@ -20,7 +20,13 @@ from app.api.deps import (
 )
 from app.core.db import get_db
 from app.models import Branch
-from app.services import partner_books, partner_requests, partner_sync, partners
+from app.services import (
+    partner_books,
+    partner_requests,
+    partner_statements,
+    partner_sync,
+    partners,
+)
 from app.services.actors import Actor
 
 router = APIRouter(tags=["fulfilment partner"])
@@ -167,8 +173,88 @@ async def lookup_request(code: str = Query(min_length=1, max_length=60),
 @router.get("/partners/books")
 async def books_status(p: Principal = Depends(require("partners.read")),
                        db: AsyncSession = Depends(get_db)):
-    """Days that could not be booked yet (e.g. the partner has no price for an item)."""
-    return await partner_books.status(db)
+    """What needs a person: days not booked, bags that went out unscanned, returns waiting,
+    partner events that failed."""
+    return await partner_books.status(db, p.branch_scope())
+
+
+class ReasonIn(BaseModel):
+    reason: str = Field(min_length=5, max_length=300)
+
+
+@router.post("/partners/requests/{request_id}/exclude")
+async def exclude_request(request_id: uuid.UUID, body: ReasonIn, request: Request,
+                          p: Principal = Depends(require("partners.write")),
+                          db: AsyncSession = Depends(get_db)):
+    """The owner takes a handed request out of the day order (booked by hand)."""
+    return await partner_books.exclude(db, _actor(p, request), p.branch_scope(), request_id,
+                                       body.reason)
+
+
+@router.get("/partners/returns")
+async def staff_returns(status: Literal["open", "waiting", "sent", "accepted"] | None = "open",
+                        p: Principal = Depends(require("partners.read")),
+                        db: AsyncSession = Depends(get_db)):
+    return await partner_books.staff_returns(db, p.branch_scope(), status=status)
+
+
+@router.post("/partners/returns/{return_id}/sent")
+async def return_sent(return_id: uuid.UUID, request: Request,
+                      p: Principal = Depends(require("grn.create")),
+                      db: AsyncSession = Depends(get_db)):
+    """Staff handed the goods back to the partner."""
+    return await partner_books.mark_sent(db, _actor(p, request), p.branch_scope(), return_id)
+
+
+@router.get("/partners/failures")
+async def failures(p: Principal = Depends(require("partners.read")),
+                   db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.models import PartnerEventFailure  # noqa: PLC0415
+
+    rows = await db.scalars(select(PartnerEventFailure)
+                            .where(PartnerEventFailure.resolved_at.is_(None))
+                            .order_by(PartnerEventFailure.failure_id).limit(200))
+    return [{"failure_id": f.failure_id, "seq": f.seq, "event_type": f.event_type,
+             "order_id": str(f.order_id) if f.order_id else None, "error": f.error,
+             "created_at": f.created_at} for f in rows]
+
+
+@router.post("/partners/failures/{failure_id}/retry")
+async def retry_failure(failure_id: int, request: Request,
+                        p: Principal = Depends(require("partners.write")),
+                        db: AsyncSession = Depends(get_db)):
+    """Run the partner part of a failed Online event again."""
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from app.models import PartnerEventFailure  # noqa: PLC0415
+
+    row = await db.get(PartnerEventFailure, failure_id, with_for_update=True)
+    if row is None or row.resolved_at is not None:
+        raise HTTPException(status_code=404, detail="failure not found")
+    try:
+        async with db.begin_nested():
+            what = await partner_requests.apply_event(db, row.payload)
+    except Exception as exc:  # noqa: BLE001 -- shown to staff, kept to retry again
+        row.error = str(getattr(exc, "message", exc))[:2000]
+        await db.flush()
+        await db.commit()
+        raise HTTPException(status_code=409, detail=row.error) from None
+    row.resolved_at, row.resolved_by = datetime.now(UTC), p.user_id
+    return {"failure_id": failure_id, "result": what}
+
+
+@router.get("/partners/statements")
+async def staff_statements(branch_id: uuid.UUID, supplier_id: uuid.UUID | None = None,
+                           week: date | None = None,
+                           p: Principal = Depends(require("partners.read")),
+                           db: AsyncSession = Depends(get_db)):
+    """A week's statement (Monday-Sunday), or the last weeks' totals without `week`."""
+    return await partner_statements.staff_view(db, p.branch_scope(), branch_id=branch_id,
+                                               supplier_id=supplier_id, week=week)
 
 
 @router.post("/partners/requests/{request_id}/tick")
@@ -265,3 +351,36 @@ async def request_ready(request_id: uuid.UUID,
                         sp: SupplierPrincipal = Depends(current_supplier),
                         db: AsyncSession = Depends(get_db)):
     return await partner_requests.partner_ready(db, sp.supplier_id, request_id)
+
+
+@router.get("/supplier/partner/returns")
+async def my_returns(open_only: bool = True,
+                     sp: SupplierPrincipal = Depends(current_supplier),
+                     db: AsyncSession = Depends(get_db)):
+    await partners.my_links(db, sp.supplier_id)
+    return await partner_books.partner_returns(db, sp.supplier_id, open_only=open_only)
+
+
+@router.post("/supplier/partner/returns/{return_id}/accept")
+async def accept_return(return_id: uuid.UUID,
+                        sp: SupplierPrincipal = Depends(current_supplier),
+                        db: AsyncSession = Depends(get_db)):
+    """The partner has its goods back."""
+    await partners.my_links(db, sp.supplier_id)
+    return await partner_books.accept(db, sp.supplier_id, sp.user.supplier_user_id, return_id)
+
+
+@router.get("/supplier/partner/statements")
+async def my_statements(week: date | None = None, branch_id: uuid.UUID | None = None,
+                        sp: SupplierPrincipal = Depends(current_supplier),
+                        db: AsyncSession = Depends(get_db)):
+    return await partner_statements.partner_view(db, sp.supplier_id, branch_id=branch_id,
+                                                 week=week)
+
+
+@router.post("/supplier/partner/statements/{week}/confirm")
+async def confirm_statement(week: date, branch_id: uuid.UUID | None = None,
+                            sp: SupplierPrincipal = Depends(current_supplier),
+                            db: AsyncSession = Depends(get_db)):
+    return await partner_statements.confirm(db, sp.supplier_id, sp.user.supplier_user_id,
+                                            week=week, branch_id=branch_id)

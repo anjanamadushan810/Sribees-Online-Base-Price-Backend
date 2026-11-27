@@ -488,7 +488,7 @@ async def test_a_partner_failure_never_blocks_the_rest_of_an_event(database, mon
     from sqlalchemy import select
 
     from app.core.db import get_sessionmaker
-    from app.models import AuditLog
+    from app.models import AuditLog, PartnerEventFailure
     from app.services import online_events, partner_requests
 
     async def broken(*_a, **_k):
@@ -503,6 +503,8 @@ async def test_a_partner_failure_never_blocks_the_rest_of_an_event(database, mon
         row = await s.scalar(select(AuditLog).where(AuditLog.action == "partner.event_failed",
                                                     AuditLog.entity_id == str(seq)))
         assert row is not None
+        kept = await s.scalar(select(PartnerEventFailure).where(PartnerEventFailure.seq == seq))
+        assert kept is not None and "partner side down" in kept.error  # kept to retry
 
 
 # ---------------------------------------------------------------- catalogue listings

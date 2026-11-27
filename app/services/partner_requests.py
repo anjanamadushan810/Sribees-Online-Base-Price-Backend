@@ -47,6 +47,9 @@ log = logging.getLogger("supply.partner")
 
 # Online statuses in which an order is live and not packed yet
 LIVE = ("pending", "confirmed", "processing", "packing")
+# the order has gone out: a bag still not scanned is a problem for staff (review LOW)
+OUT = ("packed", "ready_for_pickup", "handed_to_courier", "shipped", "out_for_delivery",
+       "delivered")
 OPEN = ("new", "seen", "ready")
 EDITABLE = ("new", "seen")
 
@@ -184,6 +187,11 @@ async def apply_event(db: AsyncSession, ev: dict, *, fetch=fetch_order) -> str:
                          .where(FulfilmentRequest.online_order_id == order_id)
                          .with_for_update())
     to = p.get("to_status")
+    if fr is not None and fr.status in OPEN and to in OUT:
+        if fr.unscanned_at is None:
+            fr.unscanned_at = _now()
+            await db.flush()
+        return "partner:unscanned"
     if to == "cancelled":
         if fr is not None and fr.status in OPEN:
             await _cancel(db, fr, "order cancelled")
@@ -242,6 +250,7 @@ async def apply_event(db: AsyncSession, ev: dict, *, fetch=fetch_order) -> str:
         elif line.qty != n["qty"]:
             await _give_back(db, fr, line)
             line.qty = n["qty"]
+            line.ticked_qty = min(line.ticked_qty, line.qty)  # review #2
             await _take(db, fr, line)
             changed = True
     for line in by_item.values():

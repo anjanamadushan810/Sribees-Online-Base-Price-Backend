@@ -319,15 +319,15 @@ async def receive(
     scope: set[uuid.UUID] | None = None,
     split_lines: bool = False,
     draft_id: uuid.UUID | None = None,
-    expiry_optional: bool = False,
+    pass_through: bool = False,
 ) -> Receipt:
     """split_lines (a staff-app draft, plan 2026-11-27): one order line may come on several
     receipt lines (one box with two expiry dates = two batches); their units together stay
     within what is due. draft_id: the draft being finished, whose reserved QR labels are
     this receipt's own; a label reserved by any other draft is refused.
-    expiry_optional: only the fulfilment partner's day order (plan P4): its goods leave at
-    once to customer orders, so a line without an expiry is taken; one with an expiry is
-    still checked."""
+    pass_through: only the fulfilment partner's day order (plan P4): its held goods leave at
+    once to customer orders, so a line without an expiry is taken (one with an expiry is
+    still checked) and weighed goods may be held too."""
     order = await _order(db, actor, order_id, scope)
     supplier = await db.get(Supplier, order.supplier_id)
     quick = order.is_quick_buy and order.status == "submitted"  # goods already in hand
@@ -382,7 +382,7 @@ async def receive(
     running = dict(got)  # split lines: each one sees what the lines before it took
     for n, ln in enumerate(lines, start=1):
         checked.append(await _check_line(db, order, order_lines, running, ln, n, received_date,
-                                         labels_required, expiry_optional=expiry_optional))
+                                         labels_required, pass_through=pass_through))
         running[ln.order_line_id] = running.get(ln.order_line_id, 0) + ln.units
     shares = _transport(actor, charge, checked)
 
@@ -488,7 +488,7 @@ async def _labels_free_of_drafts(db: AsyncSession, lines: list[ReceiptLineIn],
 
 async def _check_line(db: AsyncSession, order: SupplyOrder, order_lines: dict, got: dict,
                       ln: ReceiptLineIn, n: int, received_date: date,
-                      labels_required: bool, *, expiry_optional: bool = False) -> _Checked:
+                      labels_required: bool, *, pass_through: bool = False) -> _Checked:
     ol = order_lines.get(ln.order_line_id)
     if ol is None:
         raise SupplyError(f"line {n} is not on order {order.order_no}")
@@ -522,7 +522,7 @@ async def _check_line(db: AsyncSession, order: SupplyOrder, order_lines: dict, g
         each = await unit_weight_grams(db, item)
         grams = each * (ln.units + ln.free_units) if each else None
     if ln.hold:
-        if product.unit == "kg":
+        if product.unit == "kg" and not pass_through:
             raise SupplyError(f"{product.name} is kept by weight: weighed goods cannot be held "
                               "without labels yet")
         if ln.labels:
@@ -535,7 +535,7 @@ async def _check_line(db: AsyncSession, order: SupplyOrder, order_lines: dict, g
         if product.unit == "kg" and not ln.labels:
             raise SupplyError(f"{product.name}: scan the QR label on each bag")
     from app.services.drafts import check_expiry  # noqa: PLC0415 -- drafts imports us
-    if not (expiry_optional and ln.expiry_date is None):
+    if not (pass_through and ln.expiry_date is None):
         check_expiry(ln.expiry_date, received_date, ln.mfg_date, product.name)
     if ln.mfg_date and ln.expiry_date and ln.mfg_date >= ln.expiry_date:
         raise SupplyError(f"{product.name}: the expiry is not after the manufacture date")

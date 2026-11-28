@@ -281,8 +281,10 @@ async def close_day(db: AsyncSession, branch_id: uuid.UUID, day: date) -> dict:
         try:
             async with db.begin_nested():  # one partner's problem never blocks another's
                 order_no = await _book(db, staff, actor, supplier_id, branch_id, day, group)
-        except SupplyError as exc:
-            out["problems"].append(exc.message)
+        except Exception as exc:  # noqa: BLE001 -- that partner waits; the others book
+            out["problems"].append(str(getattr(exc, "message", exc))[:300])
+            log.warning("partner %s day %s not booked: %s", supplier_id, day,
+                        out["problems"][-1])
             continue
         out["booked"] += len(group)
         out["orders"].append(order_no)
@@ -393,7 +395,7 @@ async def _book_tier(db, staff, actor, supplier, branch_id, day, suffix, parts, 
     total = sum((p.price * p.units for _k, p in parts), Decimal("0"))
     receipt = await receiving.receive(
         db, actor, order.order_id, received_date=day,
-        invoice_no=f"{supplier.code}-{branch_code}-{day.isoformat()}{suffix}"[:40],
+        invoice_no=f"{supplier.code}-{branch_code}-{day.isoformat()}{suffix}",
         invoice_total=total,
         notes="Fulfilment partner: goods packed straight into customer orders",
         transport_charge=Decimal("0"), split_lines=True, pass_through=True,
@@ -448,6 +450,16 @@ async def _dispatch(db, fr: FulfilmentRequest, when: date, left: dict) -> None:
 
 
 # ======================================================================= back to the partner
+async def partner_units(db: AsyncSession, order_id: uuid.UUID, item_id: uuid.UUID) -> int:
+    """Units of an Online order line the partner packed (a handed-over bag)."""
+    got = await db.scalar(
+        select(func.coalesce(func.sum(FulfilmentLine.qty), 0))
+        .join(FulfilmentRequest, FulfilmentRequest.request_id == FulfilmentLine.request_id)
+        .where(FulfilmentRequest.online_order_id == order_id,
+               FulfilmentRequest.status == "handed", FulfilmentLine.order_item_id == item_id))
+    return int(got or 0)
+
+
 async def after_handover(db: AsyncSession, fr: FulfilmentRequest, ev: dict) -> str:
     """An Online order event for a request already handed over: what comes back goes back
     to the partner (owner 2026-11-28)."""

@@ -243,11 +243,16 @@ async def retry_failure(failure_id: int, request: Request,
         raise HTTPException(status_code=404, detail="failure not found")
     ev = dict(row.payload)
     payload = dict(ev.get("payload") or {})
-    if ev.get("type") == "order.status" and payload.get("order_id"):
+    moved_on = False
+    # Only a live-status failure (a request to create or follow) is replayed on the order
+    # as it is now; a cancel, RTO or return is replayed as it happened (review round 3 #1)
+    if (ev.get("type") == "order.status" and payload.get("order_id")
+            and payload.get("to_status") in partner_requests.LIVE):
         current = await partner_requests.fetch_order(uuid.UUID(str(payload["order_id"])))
         if current is None:
             raise HTTPException(status_code=409,
                                 detail="SRIBEESonline cannot be reached; try again later")
+        moved_on = current.get("status") != payload.get("to_status")
         payload["to_status"] = current.get("status") or payload.get("to_status")
         payload["lines"] = current.get("lines") or []
         ev["payload"] = payload
@@ -259,6 +264,13 @@ async def retry_failure(failure_id: int, request: Request,
         await db.flush()
         await db.commit()
         raise HTTPException(status_code=409, detail=row.error) from None
+    if what == "ignored" and moved_on and payload["to_status"] not in ("cancelled",):
+        # the order moved on (e.g. went out) without the partner: keep it for staff
+        row.error = (f"the order is now {payload['to_status']}; nothing was done for the "
+                     "partner. Check it by hand.")
+        await db.flush()
+        await db.commit()
+        raise HTTPException(status_code=409, detail=row.error)
     row.resolved_at, row.resolved_by = datetime.now(UTC), p.user_id
     return {"failure_id": failure_id, "result": what}
 

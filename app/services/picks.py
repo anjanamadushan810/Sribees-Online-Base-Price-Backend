@@ -250,10 +250,19 @@ async def give_back(db: AsyncSession, order_id: uuid.UUID, number: str | None,
         bags = [p for p in out if p.by_weight]
         back += [(p, p.qty - p.qty_returned) for p in pieces[:want]]
         key = f"{order_id}:{item_id}"
-        own_back[key] = own_back.get(key, 0) + (want if bags else len(pieces[:want]))
         if bags:
-            total = Decimal(max(ordered.get(str(item_id), want), 1))
+            # units our bags covered: the ordered units less the fulfilment partner's part of
+            # the line (a loose line split in shortfall mode, review round 3 #2)
+            from app.services.partner_books import partner_units  # noqa: PLC0415
+
+            own_units = max(ordered.get(str(item_id), want)
+                            - await partner_units(db, order_id, item_id), 0)
+            own_back[key] = own_back.get(key, 0) + min(want, own_units)
+            total = Decimal(max(own_units, 1))
             share = min(Decimal(want), total) / total
+        else:
+            own_back[key] = own_back.get(key, 0) + len(pieces[:want])
+        if bags and own_units > 0:
             for p in bags:
                 q = min(p.qty - p.qty_returned, (p.qty * share).quantize(Decimal("0.001")))
                 back.append((p, q))

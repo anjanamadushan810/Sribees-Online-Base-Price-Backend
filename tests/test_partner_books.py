@@ -576,3 +576,53 @@ async def test_a_loose_product_without_a_stock_item_is_created_by_weight(client,
         assert (await s.get(Product, rice)).unit == "kg"
     line = (await _request(order_id)).lines[0]
     assert (await _batch(line.batch_id)).qty_received == Decimal("1.000")
+
+
+async def _failure(branch, order_id, to, lines):
+    from app.core.db import get_sessionmaker
+    from app.models import Branch, PartnerEventFailure
+
+    async with get_sessionmaker()() as s, s.begin():
+        online = (await s.get(Branch, branch)).online_branch_id
+        row = PartnerEventFailure(seq=1, event_type="order.status", order_id=order_id,
+                                  branch_id=branch, error="boom", payload={
+                                      "seq": 1, "event_id": str(uuid.uuid4()),
+                                      "type": "order.status",
+                                      "payload": {"order_id": str(order_id),
+                                                  "branch": {"branch_id": str(online)},
+                                                  "to_status": to, "lines": lines}})
+        s.add(row)
+        await s.flush()
+        return row.failure_id
+
+
+async def test_a_retried_rto_is_replayed_as_it_happened(client, owner, monkeypatch):
+    from app.services import partner_requests
+
+    branch, manager, sid, ph, (a,) = await _setup(client, owner, items=(("A", "10.00"),))
+    order_id, fr = await _order(branch, [_line(a, 1)])
+    await _hand(client, manager, fr)
+    await _close(branch)
+
+    async def later(_):
+        return {"status": "refunded", "lines": []}
+    monkeypatch.setattr(partner_requests, "fetch_order", later)
+    fid = await _failure(branch, order_id, "rto_initiated", [])
+    r = await client.post(f"/partners/failures/{fid}/retry", headers=owner.headers)
+    assert r.status_code == 200 and r.json()["result"] == "partner:return:1", r.text
+
+
+async def test_a_retry_for_an_order_that_went_out_stays_for_staff(client, owner, monkeypatch):
+    from app.services import partner_requests
+
+    branch, manager, sid, ph, (a,) = await _setup(client, owner, items=(("A", "10.00"),))
+    order_id = uuid.uuid4()
+
+    async def shipped(_):
+        return {"status": "delivered", "lines": [_line(a, 1)]}
+    monkeypatch.setattr(partner_requests, "fetch_order", shipped)
+    fid = await _failure(branch, order_id, "confirmed", [_line(a, 1)])
+    r = await client.post(f"/partners/failures/{fid}/retry", headers=owner.headers)
+    assert r.status_code == 409 and "delivered" in r.json()["detail"]
+    assert any(f["failure_id"] == fid for f in (await client.get(
+        "/partners/failures", headers=owner.headers)).json())

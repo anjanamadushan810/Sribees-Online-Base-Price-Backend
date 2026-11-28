@@ -328,6 +328,42 @@ def test_production_refuses_fake_sms_and_fixed_code():
         Settings(**base, sms_provider="fake")
     with pytest.raises(ValueError, match="DEV_FIXED_OTP"):
         Settings(**base, sms_provider="textlk", dev_fixed_otp="123456")
+    # the owner-named shop phone IS allowed in production, but only in the strict form
+    s = Settings(**base, sms_provider="textlk", fixed_otp_logins="+94700000000:123456")
+    assert s.fixed_otp_map == {"+94700000000": "123456"}
+    for bad in ("0700000000:123456", "+94700000000:12345", "+94700000000"):
+        with pytest.raises(ValueError, match="FIXED_OTP_LOGINS"):
+            Settings(**base, sms_provider="textlk", fixed_otp_logins=bad)
+
+
+async def test_fixed_code_phone_signs_in_without_sms(client, owner):
+    supplier, su = await new_supplier(client, owner)
+    _, other = await new_supplier(client, owner)
+    h = ip_headers()
+    with settings_override(fixed_otp_logins=f"{su['phone']}:123456"):
+        r = await client.post("/supplier/auth/request-code", json={"phone": su["phone"]},
+                              headers=h)
+        assert r.status_code == 200
+        assert sms_count(su["phone"]) == 0  # never an SMS for the named number
+        bad = await client.post("/supplier/auth/verify", headers=h,
+                                json={"phone": su["phone"], "code": "654321"})
+        assert bad.status_code == 401
+        for _ in range(2):  # works every time, not once
+            r = await client.post("/supplier/auth/verify", headers=h,
+                                  json={"phone": su["phone"], "code": "123456"})
+            assert r.status_code == 200, r.text
+        # any other number keeps the SMS code: 123456 does not open it
+        r = await client.post("/supplier/auth/verify", headers=h,
+                              json={"phone": other["phone"], "code": "123456"})
+        assert r.status_code == 401
+    # a deactivated named phone is refused even with the right code
+    r = await client.patch(f"/suppliers/{supplier['supplier_id']}/users/{su['supplier_user_id']}",
+                           headers=owner.headers, json={"is_active": False})
+    assert r.status_code == 200
+    with settings_override(fixed_otp_logins=f"{su['phone']}:123456"):
+        r = await client.post("/supplier/auth/verify", headers=h,
+                              json={"phone": su["phone"], "code": "123456"})
+        assert r.status_code == 401
 
 
 

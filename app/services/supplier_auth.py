@@ -13,8 +13,11 @@ Rules
   OTP_MAX_PER_IP_HOUR per address. A code dies after OTP_MAX_ATTEMPTS wrong tries or
   OTP_MINUTES, and works once. The newest LIVE_CODES live codes are valid.
 - Codes are stored as an HMAC only.
+- FIXED_OTP_LOGINS (owner decision 2026-11-28): the named numbers only sign in with their
+  fixed code and never get an SMS, also in production.
 """
 
+import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -77,6 +80,8 @@ async def _serialise(db: AsyncSession, *keys: str) -> None:
 async def request_code(db: AsyncSession, *, phone: str, ip: str | None) -> None:
     settings = get_settings()
     phone = _phone(phone)
+    if phone in settings.fixed_otp_map:
+        return  # owner-named shop phone: signs in with its fixed code, never an SMS
     # Fail the same way for every number when SMS is not available, so a broken sender
     # cannot tell registered numbers from strangers (review #9).
     sender = sms.get_sender()
@@ -166,6 +171,14 @@ async def verify_code(
 
     fixed = settings.dev_fixed_otp
     if fixed and settings.environment != "production" and code == fixed:
+        return await _issue(db, user, ip, user_agent)
+    named = settings.fixed_otp_map.get(phone)
+    if named is not None:
+        if not secrets.compare_digest(code, named):
+            raise SignInError("the code is wrong or expired")
+        await audit.record(db, supplier_user_id=user.supplier_user_id,
+                           action="supplier_auth.fixed_code", entity="supplier_user",
+                           entity_id=user.supplier_user_id, ip_address=ip)
         return await _issue(db, user, ip, user_agent)
 
     await _consume_code(db, user, phone, code, ip)

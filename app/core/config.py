@@ -1,5 +1,6 @@
 """Settings, read from the environment (or a .env file beside the app in development)."""
 
+import re
 from functools import lru_cache
 
 from pydantic import Field, model_validator
@@ -94,6 +95,19 @@ class Settings(BaseSettings):
     # Development only: this code always works for registered numbers, so nobody needs
     # an SMS on the dev server. Refused in production.
     dev_fixed_otp: str = ""
+    # Owner decision 2026-11-28: named numbers that sign in with a fixed code and never get
+    # an SMS, ALSO in production (a shared shop phone). "+94700000000:123456,+947...:654321".
+    # Only these exact numbers; every other number keeps the SMS code.
+    fixed_otp_logins: str = ""
+
+    @property
+    def fixed_otp_map(self) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for part in self.fixed_otp_logins.split(","):
+            if part.strip():
+                phone, _, code = part.strip().partition(":")
+                out[phone.strip()] = code.strip()
+        return out
 
     @model_validator(mode="after")
     def _production_rules(self) -> "Settings":
@@ -108,6 +122,9 @@ class Settings(BaseSettings):
         if self.dev_fixed_otp and not (self.dev_fixed_otp.isdigit()
                                        and len(self.dev_fixed_otp) == 6):
             raise ValueError("DEV_FIXED_OTP must be 6 digits")
+        for phone, code in self.fixed_otp_map.items():
+            if not re.fullmatch(r"\+947\d{8}", phone) or not re.fullmatch(r"\d{6}", code):
+                raise ValueError("FIXED_OTP_LOGINS must be +947XXXXXXXX:6digits, comma separated")
         return self
 
 
